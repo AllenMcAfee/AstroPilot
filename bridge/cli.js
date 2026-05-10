@@ -17,6 +17,7 @@ const { linearPreprocess, checkTools } = require('../lib/linear-preprocess');
 const { classifyTarget, classifyFromSession } = require('../lib/target-classifier');
 const { lookupByName } = require('../lib/catalog');
 const { creativePipeline } = require('../lib/creative-pipeline');
+const { scoreImage } = require('../lib/scorer');
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -49,6 +50,7 @@ if (!command) {
    console.log('  classify <windowId>          Identify target and select processing profile');
    console.log('  lookup <name>                Look up a target in the built-in catalog');
    console.log('  creative <windowId>          Run adaptive creative processing pipeline');
+   console.log('  score <windowId>             Score image quality (8 dimensions + gates)');
    console.log('  tools                        Check which PI processes are installed');
    console.log('');
    console.log('  shutdown                      Stop the watcher');
@@ -290,6 +292,19 @@ async function main() {
             } else {
                console.log('Not found in catalog: ' + searchName);
             }
+            break;
+         }
+         case 'score': {
+            if (!args[1]) { console.error('Usage: score <windowId>'); process.exit(1); }
+            const scoreId = args[1];
+
+            // Classify first to get target type for scoring context
+            console.log('Classifying target...');
+            const scoreClassInfo = await classifyTarget(scoreId, { plateSolve: false });
+            console.log('Target: ' + scoreClassInfo.target.name + ' (' + scoreClassInfo.target.type + ')');
+            console.log('');
+
+            await scoreImage(scoreId, { targetType: scoreClassInfo.target.type });
             break;
          }
          case 'creative': {

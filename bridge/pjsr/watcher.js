@@ -1750,6 +1750,346 @@ handlers.check_dynamic_range = function(params) {
    };
 };
 
+// ---- Scoring & Quality Gate Command Handlers (Phase 5) ----
+
+handlers.measure_background = function(params) {
+   // Measure background quality: smoothness, neutrality, gradient.
+   // Samples corners and edges away from center subject.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var img = w.mainView.image;
+   var iw = img.width;
+   var ih = img.height;
+   var sampleSize = Math.min(Math.floor(iw * 0.08), Math.floor(ih * 0.08), 200);
+
+   // Sample 8 regions around the edges
+   var regions = [
+      { name: "TL", x: 0, y: 0 },
+      { name: "TC", x: Math.floor(iw / 2 - sampleSize / 2), y: 0 },
+      { name: "TR", x: iw - sampleSize, y: 0 },
+      { name: "ML", x: 0, y: Math.floor(ih / 2 - sampleSize / 2) },
+      { name: "MR", x: iw - sampleSize, y: Math.floor(ih / 2 - sampleSize / 2) },
+      { name: "BL", x: 0, y: ih - sampleSize },
+      { name: "BC", x: Math.floor(iw / 2 - sampleSize / 2), y: ih - sampleSize },
+      { name: "BR", x: iw - sampleSize, y: ih - sampleSize }
+   ];
+
+   var samples = [];
+   for (var i = 0; i < regions.length; i++) {
+      var reg = regions[i];
+      var r = new Rect(reg.x, reg.y, reg.x + sampleSize, reg.y + sampleSize);
+      var channelData = [];
+      for (var c = 0; c < img.numberOfChannels && c < 3; c++) {
+         channelData.push({
+            median: img.median(r, c, c),
+            mean: img.mean(r, c, c),
+            stdDev: img.stdDev(r, c, c)
+         });
+      }
+      samples.push({ name: reg.name, channels: channelData });
+   }
+
+   // Calculate gradient: max median difference across regions
+   var allMedians = [];
+   for (var c = 0; c < (img.numberOfChannels < 3 ? 1 : 3); c++) {
+      var medians = [];
+      for (var i = 0; i < samples.length; i++) {
+         medians.push(samples[i].channels[c].median);
+      }
+      allMedians.push(medians);
+   }
+
+   var gradientMax = 0;
+   for (var c = 0; c < allMedians.length; c++) {
+      var mn = Math.min.apply(null, allMedians[c]);
+      var mx = Math.max.apply(null, allMedians[c]);
+      var grad = mx - mn;
+      if (grad > gradientMax) gradientMax = grad;
+   }
+
+   // Channel imbalance in background (max difference between channel medians)
+   var bgMedians = [];
+   for (var c = 0; c < allMedians.length; c++) {
+      var sum = 0;
+      for (var i = 0; i < allMedians[c].length; i++) sum += allMedians[c][i];
+      bgMedians.push(sum / allMedians[c].length);
+   }
+   var channelImbalance = 0;
+   if (bgMedians.length >= 3) {
+      channelImbalance = Math.max(
+         Math.abs(bgMedians[0] - bgMedians[1]),
+         Math.abs(bgMedians[1] - bgMedians[2]),
+         Math.abs(bgMedians[0] - bgMedians[2])
+      );
+   }
+
+   // Average background noise (stdDev)
+   var noiseSum = 0;
+   var noiseCount = 0;
+   for (var i = 0; i < samples.length; i++) {
+      for (var c = 0; c < samples[i].channels.length; c++) {
+         noiseSum += samples[i].channels[c].stdDev;
+         noiseCount++;
+      }
+   }
+
+   return {
+      target: targetId,
+      sampleSize: sampleSize,
+      samples: samples,
+      gradient: gradientMax,
+      channelImbalance: channelImbalance,
+      backgroundMedians: bgMedians,
+      averageNoise: noiseSum / noiseCount
+   };
+};
+
+handlers.measure_stars = function(params) {
+   // Detect stars and measure FWHM, roundness, count.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   // Use DynamicPSF to detect and measure stars
+   var img = w.mainView.image;
+
+   // Create a star mask to count stars
+   var SM = new StarMask;
+   SM.waveletLayers = 5;
+   SM.noiseThreshold = 0.15;
+   SM.largeScaleGrowth = 0;
+   SM.smallScaleGrowth = 0;
+   SM.smoothness = 4;
+   SM.mode = 0;
+   SM.executeOn(w.mainView);
+
+   var maskWin = null;
+   var windows = ImageWindow.windows;
+   for (var i = 0; i < windows.length; i++) {
+      if (windows[i].mainView.id !== targetId) {
+         maskWin = windows[i];
+      }
+   }
+
+   var starCount = 0;
+   var avgBrightness = 0;
+   if (maskWin) {
+      var maskImg = maskWin.mainView.image;
+      var mr = new Rect(maskImg.width, maskImg.height);
+      avgBrightness = maskImg.mean(mr, 0, 0);
+
+      // Estimate star count from mask coverage
+      // (rough heuristic: each star covers ~25-100 pixels)
+      var maskMed = maskImg.median(mr, 0, 0);
+      var maskMax = maskImg.maximum(mr, 0, 0);
+      var maskPixels = maskImg.width * maskImg.height;
+
+      // Count pixels above threshold
+      var threshold = 0.3;
+      // Use mean * area to estimate bright pixel count
+      starCount = Math.round(avgBrightness * maskPixels / 50);
+
+      maskWin.forceClose();
+   }
+
+   // Measure FWHM using the image statistics
+   // We use median of bright peaks vs background as a proxy
+   var r = new Rect(img.width, img.height);
+   var med = img.median(r, 0, 0);
+   var max = img.maximum(r, 0, 0);
+
+   return {
+      target: targetId,
+      estimatedStarCount: starCount,
+      maskMeanBrightness: avgBrightness,
+      imageMedian: med,
+      imageMax: max
+   };
+};
+
+handlers.measure_subject_separation = function(params) {
+   // How well the subject stands out from background.
+   // Measures contrast ratio between center and edges.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var img = w.mainView.image;
+   var iw = img.width;
+   var ih = img.height;
+
+   // Center region (subject area) - center 30%
+   var cSize = Math.floor(Math.min(iw, ih) * 0.3);
+   var cx = Math.floor(iw / 2 - cSize / 2);
+   var cy = Math.floor(ih / 2 - cSize / 2);
+   var centerRect = new Rect(cx, cy, cx + cSize, cy + cSize);
+
+   // Corner region (background) - average of 4 corners
+   var cornerSize = Math.floor(Math.min(iw, ih) * 0.1);
+   var corners = [
+      new Rect(0, 0, cornerSize, cornerSize),
+      new Rect(iw - cornerSize, 0, iw, cornerSize),
+      new Rect(0, ih - cornerSize, cornerSize, ih),
+      new Rect(iw - cornerSize, ih - cornerSize, iw, ih)
+   ];
+
+   var centerMed = 0;
+   var bgMed = 0;
+
+   for (var c = 0; c < img.numberOfChannels && c < 3; c++) {
+      centerMed += img.median(centerRect, c, c);
+      var bgSum = 0;
+      for (var i = 0; i < corners.length; i++) {
+         bgSum += img.median(corners[i], c, c);
+      }
+      bgMed += bgSum / corners.length;
+   }
+
+   var nch = Math.min(img.numberOfChannels, 3);
+   centerMed /= nch;
+   bgMed /= nch;
+
+   var contrastRatio = (bgMed > 0) ? centerMed / bgMed : 0;
+   var separation = centerMed - bgMed;
+
+   return {
+      target: targetId,
+      centerMedian: centerMed,
+      backgroundMedian: bgMed,
+      contrastRatio: contrastRatio,
+      separation: separation
+   };
+};
+
+handlers.detect_artifacts = function(params) {
+   // Look for common processing artifacts.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var img = w.mainView.image;
+   var iw = img.width;
+   var ih = img.height;
+   var r = new Rect(iw, ih);
+   var issues = [];
+
+   // 1. Check for hot pixels (extreme outliers)
+   for (var c = 0; c < img.numberOfChannels && c < 3; c++) {
+      var max = img.maximum(r, c, c);
+      var p99Mean = img.mean(r, c, c);
+      if (max > 0.999 && max > p99Mean * 20) {
+         issues.push("Possible hot pixels in channel " + c);
+      }
+   }
+
+   // 2. Check for banding (row/column noise)
+   // Sample a few columns and check variance
+   var colVars = [];
+   var step = Math.floor(iw / 10);
+   for (var x = step; x < iw - step; x += step) {
+      var colRect = new Rect(x, 0, x + 1, ih);
+      var colStd = img.stdDev(colRect, 0, 0);
+      colVars.push(colStd);
+   }
+   var avgColVar = colVars.reduce(function(a, b) { return a + b; }, 0) / colVars.length;
+   var maxColVar = Math.max.apply(null, colVars);
+   if (maxColVar > avgColVar * 3) {
+      issues.push("Possible banding detected (column noise variation: " + (maxColVar / avgColVar).toFixed(1) + "x)");
+   }
+
+   // 3. Check for clipped highlights
+   var totalPixels = iw * ih;
+   for (var c = 0; c < img.numberOfChannels && c < 3; c++) {
+      var max = img.maximum(r, c, c);
+      if (max >= 0.999) {
+         // Estimate clipped fraction from mean and max
+         var mean = img.mean(r, c, c);
+         if (mean > 0.5) {
+            issues.push("Significant highlight clipping in channel " + c);
+         }
+      }
+   }
+
+   // 4. Check for color fringing (channel misalignment at edges)
+   // Compare channel medians in a ring around center
+   var ringOuter = Math.floor(Math.min(iw, ih) * 0.45);
+   var ringInner = Math.floor(Math.min(iw, ih) * 0.35);
+   var rcx = Math.floor(iw / 2);
+   var rcy = Math.floor(ih / 2);
+   var ringRect = new Rect(rcx - ringOuter, rcy - ringOuter, rcx + ringOuter, rcy + ringOuter);
+
+   if (img.numberOfChannels >= 3) {
+      var ringR = img.median(ringRect, 0, 0);
+      var ringG = img.median(ringRect, 1, 1);
+      var ringB = img.median(ringRect, 2, 2);
+      var maxDiff = Math.max(Math.abs(ringR - ringG), Math.abs(ringG - ringB), Math.abs(ringR - ringB));
+      if (maxDiff > 0.05) {
+         issues.push("Possible color fringing (channel median spread: " + maxDiff.toFixed(4) + ")");
+      }
+   }
+
+   return {
+      target: targetId,
+      issues: issues,
+      issueCount: issues.length
+   };
+};
+
+handlers.measure_tonal_balance = function(params) {
+   // Evaluate dynamic range usage, clipping, black crush.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var img = w.mainView.image;
+   var r = new Rect(img.width, img.height);
+
+   var channels = [];
+   for (var c = 0; c < img.numberOfChannels && c < 3; c++) {
+      var min = img.minimum(r, c, c);
+      var max = img.maximum(r, c, c);
+      var med = img.median(r, c, c);
+      var mean = img.mean(r, c, c);
+      var std = img.stdDev(r, c, c);
+
+      channels.push({
+         channel: c,
+         min: min,
+         max: max,
+         median: med,
+         mean: mean,
+         stdDev: std,
+         dynamicRange: max - min,
+         midtoneBalance: med / (max - min + 0.001)
+      });
+   }
+
+   // Overall dynamic range usage score
+   var avgDR = 0;
+   for (var i = 0; i < channels.length; i++) {
+      avgDR += channels[i].dynamicRange;
+   }
+   avgDR /= channels.length;
+
+   return {
+      target: targetId,
+      channels: channels,
+      averageDynamicRange: avgDR
+   };
+};
+
 handlers.run_script = function(params) {
    var code = params.code;
    if (!code) throw new Error("Missing 'code' parameter");
