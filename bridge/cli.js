@@ -14,6 +14,8 @@ const bridge = require('./client');
 const { scanDirectory } = require('../lib/classifier');
 const { stackSession, stackByFilter } = require('../lib/stacker');
 const { linearPreprocess, checkTools } = require('../lib/linear-preprocess');
+const { classifyTarget, classifyFromSession } = require('../lib/target-classifier');
+const { lookupByName } = require('../lib/catalog');
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -43,6 +45,8 @@ if (!command) {
    console.log('  scan <directory> --json       Same, but output as JSON');
    console.log('  stack <directory> [outDir]    Calibrate, register, and stack');
    console.log('  linear <windowId>            Linear pre-processing (gradients, color cal, NR)');
+   console.log('  classify <windowId>          Identify target and select processing profile');
+   console.log('  lookup <name>                Look up a target in the built-in catalog');
    console.log('  tools                        Check which PI processes are installed');
    console.log('');
    console.log('  shutdown                      Stop the watcher');
@@ -236,6 +240,53 @@ async function main() {
                for (const [filter, r] of Object.entries(result)) {
                   console.log('  ' + filter + ': ' + r.resultPath);
                }
+            }
+            break;
+         }
+         case 'classify': {
+            if (!args[1]) { console.error('Usage: classify <windowId>'); process.exit(1); }
+            const classResult = await classifyTarget(args[1], {
+               plateSolve: !args.includes('--no-solve')
+            });
+            console.log('');
+            console.log('Target: ' + classResult.target.name);
+            if (classResult.target.aliases && classResult.target.aliases.length > 0) {
+               console.log('Also known as: ' + classResult.target.aliases.join(', '));
+            }
+            console.log('Type: ' + classResult.target.type);
+            console.log('Identified by: ' + classResult.method);
+            if (classResult.target.notes) console.log('Notes: ' + classResult.target.notes);
+            console.log('');
+            console.log('Processing profile: ' + classResult.profile.name);
+            console.log('  Stretch: ' + classResult.profile.stretch);
+            console.log('  Combination: ' + classResult.profile.combination);
+            if (classResult.profile.focus) {
+               console.log('  Focus:');
+               classResult.profile.focus.forEach(function(f) { console.log('    - ' + f); });
+            }
+            const p = classResult.profile.processing;
+            if (p) {
+               console.log('  LHE: radius=' + p.lheRadius + ' slope=' + p.lheSlopeLimit + ' amount=' + p.lheAmount);
+               console.log('  Stars: ' + (p.starReduction.iterations > 0
+                  ? p.starReduction.iterations + ' iterations, ' + (p.starReduction.amount * 100) + '% amount'
+                  : 'no reduction (stars are the subject)'));
+               console.log('  NR: luminance sigma=' + p.noiseReduction.sigmaL + ', chrominance sigma=' + p.noiseReduction.sigmaC);
+            }
+            break;
+         }
+         case 'lookup': {
+            if (!args[1]) { console.error('Usage: lookup <name>'); process.exit(1); }
+            const searchName = args.slice(1).join(' ');
+            const entry = lookupByName(searchName);
+            if (entry) {
+               console.log('Found: ' + entry.names[0]);
+               if (entry.names.length > 1) console.log('Aliases: ' + entry.names.slice(1).join(', '));
+               console.log('Type: ' + entry.type);
+               console.log('RA: ' + entry.ra.toFixed(3) + 'h  DEC: ' + (entry.dec >= 0 ? '+' : '') + entry.dec.toFixed(3) + '°');
+               console.log('Size: ' + entry.size + ' arcmin');
+               if (entry.notes) console.log('Notes: ' + entry.notes);
+            } else {
+               console.log('Not found in catalog: ' + searchName);
             }
             break;
          }
