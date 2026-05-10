@@ -6,7 +6,7 @@ It talks to a running PixInsight instance through a JSON bridge protocol, classi
 
 ## What it can do
 
-**Pre-processing** — Scan a directory of FITS/XISF files, auto-classify lights/darks/flats/bias by reading headers, create master calibration frames, calibrate, measure subframe quality, register, stack with adaptive pixel rejection, and auto-crop stacking artifacts. Multi-filter sessions are handled automatically.
+**Pre-processing** — Scan a directory of FITS/XISF files, auto-classify lights/darks/flats/bias by reading headers, validate calibration frame compatibility (gain, offset, temperature, binning, exposure, camera, and filter matching), create master calibration frames, calibrate, measure subframe quality, register, stack with adaptive pixel rejection, and auto-crop stacking artifacts. Multi-filter sessions are handled automatically.
 
 **Target identification** — Looks up your target from FITS keywords or plate solving, matches it against a 77-object catalog covering the most commonly photographed deep-sky targets, and maps it to one of 12 processing types (spiral galaxy, emission nebula, globular cluster, etc.).
 
@@ -149,7 +149,9 @@ node bridge/cli.js pipeline MyImage
 |---------|-------------|
 | `scan <dir>` | Scan and classify FITS/XISF files |
 | `scan <dir> --json` | Same, but output as JSON |
-| `stack <dir> [outDir]` | Full stacking pipeline |
+| `validate <dir>` | Check calibration frame compatibility before stacking |
+| `stack <dir> [outDir]` | Full stacking pipeline (validates first) |
+| `stack <dir> --force` | Stack despite validation errors |
 
 **Processing:**
 
@@ -250,6 +252,7 @@ lib/
   xisf-header.js     XISF header parser
   classifier.js      Frame classification (type, filter, target, equipment)
   stacker.js         Stacking orchestrator (calibrate, register, integrate)
+  validator.js       Pre-stacking calibration frame validation
   linear-preprocess.js  Linear pre-processing pipeline
   catalog.js         77-object deep-sky target catalog
   profiles.js        12 processing profiles by target type

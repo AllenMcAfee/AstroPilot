@@ -26,6 +26,7 @@ const equipment = require('../lib/equipment');
 const recipes = require('../lib/recipes');
 const memory = require('../lib/memory');
 const astrobin = require('../lib/astrobin');
+const { validateSession } = require('../lib/validator');
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -53,7 +54,10 @@ if (!command) {
    console.log('Pre-processing:');
    console.log('  scan <directory>              Scan and classify FITS/XISF files');
    console.log('  scan <directory> --json       Same, but output as JSON');
+   console.log('  validate <directory>          Check calibration compatibility before stacking');
+   console.log('  validate <directory> --json   Same, but output as JSON');
    console.log('  stack <directory> [outDir]    Calibrate, register, and stack');
+   console.log('  stack <dir> --force           Stack despite validation errors');
    console.log('  linear <windowId>            Linear pre-processing (gradients, color cal, NR)');
    console.log('  classify <windowId>          Identify target and select processing profile');
    console.log('  lookup <name>                Look up a target in the built-in catalog');
@@ -257,14 +261,28 @@ async function main() {
             }
             break;
          }
+         case 'validate': {
+            if (!args[1]) { console.error('Usage: validate <directory> [--json]'); process.exit(1); }
+            const valSession = scanDirectory(args[1]);
+            const valReport = validateSession(valSession);
+            if (args.includes('--json')) {
+               console.log(JSON.stringify(valReport.toJSON(), null, 2));
+            } else {
+               console.log(valReport.summary());
+            }
+            process.exit(valReport.canProceed() ? 0 : 1);
+            break;
+         }
          case 'stack': {
-            if (!args[1]) { console.error('Usage: stack <directory> [outputDir]'); process.exit(1); }
+            if (!args[1]) { console.error('Usage: stack <directory> [outputDir] [--force] [--skip-validation]'); process.exit(1); }
             const stackSession_ = scanDirectory(args[1]);
             console.log(stackSession_.summary());
             console.log('');
 
             const stackOpts = {};
             if (args[2] && !args[2].startsWith('--')) stackOpts.outputDir = args[2];
+            if (args.includes('--force')) stackOpts.forceStack = true;
+            if (args.includes('--skip-validation')) stackOpts.skipValidation = true;
 
             const byFilter = stackSession_.byFilter();
             const filterCount = Object.keys(byFilter).length;
