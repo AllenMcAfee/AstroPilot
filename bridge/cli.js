@@ -18,6 +18,7 @@ const { classifyTarget, classifyFromSession } = require('../lib/target-classifie
 const { lookupByName } = require('../lib/catalog');
 const { creativePipeline } = require('../lib/creative-pipeline');
 const { scoreImage } = require('../lib/scorer');
+const { writeReport } = require('../lib/report');
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -51,6 +52,7 @@ if (!command) {
    console.log('  lookup <name>                Look up a target in the built-in catalog');
    console.log('  creative <windowId>          Run adaptive creative processing pipeline');
    console.log('  score <windowId>             Score image quality (8 dimensions + gates)');
+   console.log('  report <windowId> [outDir]   Generate processing report (HTML + MD + JSON)');
    console.log('  tools                        Check which PI processes are installed');
    console.log('');
    console.log('  shutdown                      Stop the watcher');
@@ -305,6 +307,38 @@ async function main() {
             console.log('');
 
             await scoreImage(scoreId, { targetType: scoreClassInfo.target.type });
+            break;
+         }
+         case 'report': {
+            if (!args[1]) { console.error('Usage: report <windowId> [outputDir]'); process.exit(1); }
+            const reportId = args[1];
+            const reportDir = args[2] || '.';
+
+            // Classify
+            console.log('Classifying target...');
+            const reportClassInfo = await classifyTarget(reportId, { plateSolve: false });
+
+            // Score
+            console.log('Scoring image...');
+            const reportScore = await scoreImage(reportId, { targetType: reportClassInfo.target.type });
+
+            // Build report data
+            const reportData = {
+               target: reportClassInfo.target,
+               classification: reportClassInfo,
+               scores: reportScore.scores,
+               overall: reportScore.overall,
+               gates: reportScore.gates,
+               creativeSteps: reportScore.measurements ? [] : []
+            };
+
+            // Write
+            const paths = writeReport(reportData, reportDir);
+            console.log('');
+            console.log('Reports written:');
+            console.log('  HTML:     ' + paths.html);
+            console.log('  Markdown: ' + paths.markdown);
+            console.log('  JSON:     ' + paths.json);
             break;
          }
          case 'creative': {
