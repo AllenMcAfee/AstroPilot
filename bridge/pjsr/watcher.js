@@ -33,8 +33,19 @@ function ensureDirectory(path) {
 // ---- File Helpers ----
 
 function readTextFile(filePath) {
-   var lines = File.readLines(filePath);
-   return lines.join("\n");
+   var p = String(filePath);
+   var f = new File;
+   f.openForReading(p);
+   var size = f.size;
+   var text = "";
+   for (var i = 0; i < size; i++) {
+      var byte = f.readInt8();
+      if (byte > 0) {
+         text += String.fromCharCode(byte);
+      }
+   }
+   f.close();
+   return text;
 }
 
 function writeTextFile(path, text) {
@@ -2399,7 +2410,6 @@ function checkForCommands() {
    ensureDirectory(COMMANDS_DIR);
    ensureDirectory(RESULTS_DIR);
 
-   // Write a ready sentinel so the client knows the watcher is alive
    writeTextFile(BRIDGE_BASE + "/watcher.pid", JSON.stringify({
       version: VERSION,
       started: (new Date()).toISOString(),
@@ -2407,15 +2417,18 @@ function checkForCommands() {
    }));
 
    console.noteln("AstroPilot: Watcher started. Polling every " + POLL_INTERVAL_MS + "ms.");
-   console.noteln("AstroPilot: To stop, create a 'shutdown' file in the commands directory.");
+   console.noteln("AstroPilot: Close the watcher dialog to stop.");
+   console.noteln("AstroPilot: All PI interaction happens through the CLI:");
+   console.noteln("AstroPilot:   astropilot ping / list / stats / auto ...");
    console.noteln("");
 
-   // Use a Dialog with a Timer to keep the script alive while letting PI
-   // process UI events. The dialog runs its own event loop, so PI stays
-   // responsive. The Timer fires periodically to check for commands.
+   // PJSR requires Dialog.execute() to keep the script alive and PI
+   // responsive. The dialog is modal (PI can't be clicked behind it),
+   // but all PI operations work through AstroPilot CLI commands.
+   // Close the dialog when you need direct PI access, then restart.
    var dlg = new Dialog;
-   dlg.windowTitle = "AstroPilot Watcher";
-   dlg.setMinSize(300, 80);
+   dlg.windowTitle = "AstroPilot Watcher \u2014 PI interaction disabled (PixInsight limitation) \u2014 Close to restore";
+   dlg.setMinSize(520, 40);
 
    var watcherTimer = new Timer;
    watcherTimer.interval = POLL_INTERVAL_MS / 1000.0;
@@ -2423,7 +2436,6 @@ function checkForCommands() {
    watcherTimer.onTimeout = function() {
       if (!running) {
          watcherTimer.stop();
-         dlg.cancel();
          return;
       }
       try {
@@ -2438,8 +2450,11 @@ function checkForCommands() {
    };
 
    dlg.execute();
+   // Dialog closed by user — stop everything
+   running = false;
+   watcherTimer.stop();
 
-   // Cleanup after dialog closes
+   // Cleanup
    watcherTimer.stop();
    running = false;
    deleteFile(BRIDGE_BASE + "/watcher.pid");
