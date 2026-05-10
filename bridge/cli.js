@@ -16,6 +16,7 @@ const { stackSession, stackByFilter } = require('../lib/stacker');
 const { linearPreprocess, checkTools } = require('../lib/linear-preprocess');
 const { classifyTarget, classifyFromSession } = require('../lib/target-classifier');
 const { lookupByName } = require('../lib/catalog');
+const { creativePipeline } = require('../lib/creative-pipeline');
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -47,6 +48,7 @@ if (!command) {
    console.log('  linear <windowId>            Linear pre-processing (gradients, color cal, NR)');
    console.log('  classify <windowId>          Identify target and select processing profile');
    console.log('  lookup <name>                Look up a target in the built-in catalog');
+   console.log('  creative <windowId>          Run adaptive creative processing pipeline');
    console.log('  tools                        Check which PI processes are installed');
    console.log('');
    console.log('  shutdown                      Stop the watcher');
@@ -288,6 +290,30 @@ async function main() {
             } else {
                console.log('Not found in catalog: ' + searchName);
             }
+            break;
+         }
+         case 'creative': {
+            if (!args[1]) { console.error('Usage: creative <windowId> [--ha=<id>] [--oiii=<id>] [--stars=<id>]'); process.exit(1); }
+            const creativeId = args[1];
+
+            // Parse optional narrowband/stars window args
+            const creativeOpts = {};
+            for (const arg of args.slice(2)) {
+               if (arg.startsWith('--ha=')) creativeOpts.haWindowId = arg.slice(5);
+               if (arg.startsWith('--oiii=')) creativeOpts.oiiiWindowId = arg.slice(7);
+               if (arg.startsWith('--stars=')) creativeOpts.starsId = arg.slice(8);
+            }
+
+            // Classify target to get profile
+            console.log('Classifying target...');
+            const classInfo = await classifyTarget(creativeId, { plateSolve: false });
+            console.log('Target: ' + classInfo.target.name + ' (' + classInfo.target.type + ')');
+            console.log('Profile: ' + classInfo.profile.name);
+            console.log('');
+
+            const creativeResult = await creativePipeline(creativeId, classInfo.profile, creativeOpts);
+            console.log('');
+            console.log('Steps completed: ' + creativeResult.steps.length);
             break;
          }
          case 'tools': {

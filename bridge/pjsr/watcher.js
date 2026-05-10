@@ -1222,6 +1222,534 @@ handlers.star_extraction = function(params) {
    }
 };
 
+// ---- Creative Processing Command Handlers (Phase 4) ----
+
+handlers.stretch = function(params) {
+   // Apply a nonlinear stretch. Method is chosen by the processing profile.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+   var method = params.method || "auto_stf";
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   if (method === "auto_stf") {
+      // ScreenTransferFunction auto-stretch baked into the image via HistogramTransformation
+      var stf = new ScreenTransferFunction;
+      stf.executeOn(w.mainView);
+
+      // Read the STF parameters and apply as a permanent HT
+      var stfData = w.mainView.stf;
+      var HT = new HistogramTransformation;
+
+      if (w.mainView.image.numberOfChannels >= 3) {
+         // Per-channel STF
+         HT.H = [[stfData[0][1], stfData[0][0], stfData[0][2], 0, 1],
+                  [stfData[1][1], stfData[1][0], stfData[1][2], 0, 1],
+                  [stfData[2][1], stfData[2][0], stfData[2][2], 0, 1],
+                  [0, 0.5, 1, 0, 1],
+                  [0, 0.5, 1, 0, 1]];
+      } else {
+         HT.H = [[0, 0.5, 1, 0, 1],
+                  [0, 0.5, 1, 0, 1],
+                  [0, 0.5, 1, 0, 1],
+                  [stfData[0][1], stfData[0][0], stfData[0][2], 0, 1],
+                  [0, 0.5, 1, 0, 1]];
+      }
+      HT.executeOn(w.mainView);
+
+      // Reset STF
+      var resetStf = new ScreenTransferFunction;
+      resetStf.executeOn(w.mainView);
+
+      return { target: targetId, method: "auto_stf" };
+   }
+
+   if (method === "ghs") {
+      // Generalized Hyperbolic Stretch
+      try {
+         var GHS = new GeneralizedHyperbolicStretch;
+         GHS.stretchType = params.stretchType || 2; // Hyperbolic
+         GHS.D = params.D || -5.0;                  // Stretch factor
+         GHS.b = params.b || 0.2;                    // Balance
+         GHS.SP = params.SP || 0.0;                  // Symmetry point
+         GHS.LP = params.LP || 0.0;                  // Local stretch parameter
+         GHS.HP = params.HP || 1.0;                  // Highlight protection
+         GHS.BP = params.BP || 0.0;                  // Black point
+         GHS.WP = params.WP || 1.0;                  // White point
+         GHS.executeOn(w.mainView);
+         return { target: targetId, method: "ghs" };
+      } catch (e) {
+         // GHS not installed, fall back to STF
+         return handlers.stretch({ target: targetId, method: "auto_stf" });
+      }
+   }
+
+   if (method === "arcsinh") {
+      // Arcsinh stretch via PixelMath — preserves star colors
+      var img = w.mainView.image;
+      var r = new Rect(img.width, img.height);
+      // Find black point from median of faintest channel
+      var medians = [];
+      for (var c = 0; c < img.numberOfChannels; c++) {
+         medians.push(img.median(r, c, c));
+      }
+      var bp = Math.min.apply(null, medians) * 0.9;
+      var stretch = params.stretchFactor || 50;
+
+      var PM = new PixelMath;
+      PM.expression = "asinh(($T - " + bp.toFixed(8) + ") * " + stretch + ") / asinh((1 - " + bp.toFixed(8) + ") * " + stretch + ")";
+      PM.useSingleExpression = true;
+      PM.generateOutput = true;
+      PM.optimization = true;
+      PM.rescale = false;
+      PM.truncate = true;
+      PM.truncateLower = 0;
+      PM.truncateUpper = 1;
+      PM.createNewImage = false;
+      PM.executeOn(w.mainView);
+
+      return { target: targetId, method: "arcsinh", stretchFactor: stretch, blackPoint: bp };
+   }
+
+   if (method === "statistical") {
+      // Seti Statistical Stretch (Franklin Marek method)
+      // Iterative midtone stretch using image statistics
+      var img = w.mainView.image;
+      var r = new Rect(img.width, img.height);
+      var iterations = params.iterations || 8;
+      var targetMedian = params.targetMedian || 0.25;
+
+      for (var iter = 0; iter < iterations; iter++) {
+         var med = img.median(r, 0, img.numberOfChannels - 1);
+         if (med >= targetMedian) break;
+
+         // Calculate midtone transfer function parameter
+         var mtf = 0.5 * (1.0 + (targetMedian - med) / (1.0 - med));
+         mtf = Math.min(0.98, Math.max(0.02, mtf));
+
+         var HT = new HistogramTransformation;
+         if (img.numberOfChannels >= 3) {
+            HT.H = [[0, 0.5, 1, 0, 1],
+                     [0, 0.5, 1, 0, 1],
+                     [0, 0.5, 1, 0, 1],
+                     [0, 0.5, 1, 0, 1],
+                     [0, mtf, 1, 0, 1]];
+         } else {
+            HT.H = [[0, 0.5, 1, 0, 1],
+                     [0, 0.5, 1, 0, 1],
+                     [0, 0.5, 1, 0, 1],
+                     [0, mtf, 1, 0, 1],
+                     [0, 0.5, 1, 0, 1]];
+         }
+         HT.executeOn(w.mainView);
+      }
+
+      return { target: targetId, method: "statistical", iterations: iter, targetMedian: targetMedian };
+   }
+
+   throw new Error("Unknown stretch method: " + method);
+};
+
+handlers.hdrmt = function(params) {
+   // HDRMultiscaleTransform — compress bright cores without killing faint stuff.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var HDRMT = new HDRMultiscaleTransform;
+   HDRMT.numberOfLayers = params.layers || 6;
+   HDRMT.numberOfIterations = params.iterations || 1;
+   HDRMT.overdrive = params.overdrive || 0;
+   HDRMT.medianTransform = false;
+   HDRMT.scalingFunctionData = [0, 0, 0, 0, 0, 0];
+   HDRMT.scalingFunctionNoiseSigma = [1, 1, 1, 1, 1, 1];
+   HDRMT.scalingFunctionEnabled = [true, true, true, true, true, true];
+   HDRMT.deringing = params.deringing !== false;
+   HDRMT.smallScaleDeringing = params.smallScaleDeringing || 0.0;
+   HDRMT.largeScaleDeringing = params.largeScaleDeringing || 0.5;
+   HDRMT.outputDeringingMask = false;
+   HDRMT.toLightness = params.toLightness !== false;
+
+   // Inverted mode: enhance faint structures
+   if (params.inverted) {
+      // Invert, apply HDRMT, invert back
+      var PM1 = new PixelMath;
+      PM1.expression = "1 - $T";
+      PM1.useSingleExpression = true;
+      PM1.createNewImage = false;
+      PM1.rescale = false;
+      PM1.truncate = true;
+      PM1.executeOn(w.mainView);
+
+      HDRMT.executeOn(w.mainView);
+
+      PM1.executeOn(w.mainView);
+
+      return { target: targetId, inverted: true, layers: HDRMT.numberOfLayers };
+   }
+
+   HDRMT.executeOn(w.mainView);
+   return { target: targetId, inverted: false, layers: HDRMT.numberOfLayers };
+};
+
+handlers.dark_structure_enhance = function(params) {
+   // Enhance dark structures (dust lanes, dark nebulae) via PixelMath.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+   var amount = params.amount || 0.3;
+   var sigma = params.sigma || 30;
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var img = w.mainView.image;
+
+   // Create blurred luminance model
+   var modelId = "AstroPilot_dse_temp";
+   var modelWin = new ImageWindow(img.width, img.height, 1,
+                                   img.bitsPerSample, img.isReal, false, modelId);
+   modelWin.mainView.beginProcess();
+   // Extract luminance
+   var PM0 = new PixelMath;
+   PM0.expression = "CIELightness($T)";
+   PM0.useSingleExpression = true;
+   PM0.createNewImage = false;
+   PM0.executeOn(w.mainView);
+   // Actually, just copy and blur
+   modelWin.mainView.image.assign(img);
+   modelWin.mainView.endProcess();
+
+   // Blur the model
+   var conv = new Convolution;
+   conv.mode = Convolution.prototype.Parametric;
+   conv.sigma = sigma;
+   conv.shape = 2.0;
+   conv.aspectRatio = 1.0;
+   conv.rotationAngle = 0;
+   conv.executeOn(modelWin.mainView);
+
+   // Darken: result = image * (1 - amount * (model - image) / model)
+   // Simplified: result = image - amount * (model - image) where model > image
+   var PM = new PixelMath;
+   PM.expression = "$T - " + amount.toFixed(4) + " * max(0, " + modelId + " - $T)";
+   PM.useSingleExpression = true;
+   PM.generateOutput = true;
+   PM.optimization = true;
+   PM.rescale = false;
+   PM.truncate = true;
+   PM.truncateLower = 0;
+   PM.truncateUpper = 1;
+   PM.createNewImage = false;
+   PM.executeOn(w.mainView);
+
+   modelWin.forceClose();
+
+   return { target: targetId, amount: amount, sigma: sigma };
+};
+
+handlers.sharpen = function(params) {
+   // Masked sharpening via UnsharpMask or MLT.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+   var method = params.method || "usm";
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   if (method === "usm") {
+      var USM = new UnsharpMask;
+      USM.sigma = params.sigma || 2.5;
+      USM.amount = params.amount || 0.30;
+      USM.deringing = params.deringing !== false;
+      USM.deringingDark = params.deringingDark || 0.02;
+      USM.deringingBright = params.deringingBright || 0.0;
+      USM.linear = false;
+      USM.executeOn(w.mainView);
+
+      return { target: targetId, method: "usm", sigma: USM.sigma, amount: USM.amount };
+   }
+
+   // MLT sharpening
+   var MLT = new MultiscaleLinearTransform;
+   var bias = params.bias || 0.15;
+   MLT.layers = [
+      [true, true, 0, true, bias * 2, false, 0],    // layer 1: strongest
+      [true, true, 0, true, bias * 1.5, false, 0],  // layer 2
+      [true, true, 0, true, bias, false, 0],         // layer 3
+      [true, true, 0, false, 0, false, 0],           // layer 4
+      [true, true, 0, false, 0, false, 0]            // residual
+   ];
+   MLT.executeOn(w.mainView);
+
+   return { target: targetId, method: "mlt", bias: bias };
+};
+
+handlers.ha_blend = function(params) {
+   // Blend Ha data into an RGB image.
+   // Soft-clamp injection into red channel + luminance contribution.
+   var targetId = params.target || params.targetId;
+   var haId = params.haWindowId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+   if (!haId) throw new Error("Missing 'haWindowId' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+   var haW = ImageWindow.windowById(haId);
+   if (haW.isNull) throw new Error("Window '" + haId + "' not found");
+
+   var haAmount = params.amount || 0.35;
+   var lumAmount = params.lumAmount || 0.15;
+   var softClamp = params.softClamp || 0.85;
+
+   // Red channel: blend Ha with soft clamping to avoid blowout
+   // Green/Blue: add subtle luminance contribution from Ha
+   var PM = new PixelMath;
+   PM.expression = "max($T, $T * (1 - " + haAmount.toFixed(4) + ") + " +
+                   haAmount.toFixed(4) + " * min(" + haId + ", " + softClamp.toFixed(4) + "))";
+   PM.expression1 = "$T + " + lumAmount.toFixed(4) + " * " + haId;
+   PM.expression2 = "$T";
+   PM.useSingleExpression = false;
+   PM.generateOutput = true;
+   PM.optimization = true;
+   PM.rescale = false;
+   PM.truncate = true;
+   PM.truncateLower = 0;
+   PM.truncateUpper = 1;
+   PM.createNewImage = false;
+   PM.executeOn(w.mainView);
+
+   return { target: targetId, haWindow: haId, amount: haAmount, lumAmount: lumAmount };
+};
+
+handlers.oiii_blend = function(params) {
+   // Blend OIII data into an RGB image (green-blue contribution).
+   var targetId = params.target || params.targetId;
+   var oiiiId = params.oiiiWindowId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+   if (!oiiiId) throw new Error("Missing 'oiiiWindowId' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+   var oiiiW = ImageWindow.windowById(oiiiId);
+   if (oiiiW.isNull) throw new Error("Window '" + oiiiId + "' not found");
+
+   var amount = params.amount || 0.30;
+
+   var PM = new PixelMath;
+   PM.expression = "$T"; // Red: untouched
+   PM.expression1 = "max($T, $T * (1 - " + amount.toFixed(4) + ") + " + amount.toFixed(4) + " * " + oiiiId + ")";
+   PM.expression2 = "max($T, $T * (1 - " + amount.toFixed(4) + ") + " + amount.toFixed(4) + " * " + oiiiId + ")";
+   PM.useSingleExpression = false;
+   PM.generateOutput = true;
+   PM.optimization = true;
+   PM.rescale = false;
+   PM.truncate = true;
+   PM.truncateLower = 0;
+   PM.truncateUpper = 1;
+   PM.createNewImage = false;
+   PM.executeOn(w.mainView);
+
+   return { target: targetId, oiiiWindow: oiiiId, amount: amount };
+};
+
+handlers.scnr = function(params) {
+   // SCNR green cast removal.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var SCNR_P = new SCNR;
+   SCNR_P.amount = params.amount || 0.80;
+   SCNR_P.protectionMethod = params.protectionMethod || 1; // AverageNeutral
+   SCNR_P.colorToRemove = params.color || 1; // Green
+   SCNR_P.preserveLightness = params.preserveLightness !== false;
+   SCNR_P.executeOn(w.mainView);
+
+   return { target: targetId, amount: SCNR_P.amount };
+};
+
+handlers.selective_color_saturation = function(params) {
+   // Boost saturation in specific hue ranges using CurvesTransformation.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var strength = params.strength || "moderate";
+
+   // Saturation curves tuned by strength
+   var CT = new CurvesTransformation;
+   CT.St = 2; // Akima subsplines
+
+   if (strength === "gentle") {
+      CT.S = [[0, 0], [0.15, 0.15], [0.40, 0.48], [0.70, 0.75], [1, 1]];
+   } else if (strength === "strong") {
+      CT.S = [[0, 0], [0.10, 0.10], [0.35, 0.58], [0.65, 0.82], [1, 1]];
+   } else { // moderate
+      CT.S = [[0, 0], [0.15, 0.15], [0.40, 0.55], [0.70, 0.80], [1, 1]];
+   }
+
+   CT.executeOn(w.mainView);
+
+   return { target: targetId, strength: strength };
+};
+
+handlers.star_color_enhance = function(params) {
+   // Boost star colors using a star mask + saturation curve.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   // Create star mask
+   var SM = new StarMask;
+   SM.waveletLayers = 6;
+   SM.noiseThreshold = 0.10;
+   SM.largeScaleGrowth = 1;
+   SM.smallScaleGrowth = 1;
+   SM.growthCompensation = 2;
+   SM.smoothness = 8;
+   SM.mode = 0;
+   SM.executeOn(w.mainView);
+
+   var maskWin = null;
+   var windows = ImageWindow.windows;
+   for (var i = 0; i < windows.length; i++) {
+      if (windows[i].mainView.id !== targetId) {
+         maskWin = windows[i];
+      }
+   }
+   if (!maskWin) throw new Error("Star mask not found");
+
+   // Apply mask (mask = stars, so saturation only affects stars)
+   w.mask = maskWin;
+   w.maskVisible = false;
+   w.maskInverted = false;
+
+   // Saturation boost on stars
+   var CT = new CurvesTransformation;
+   CT.St = 2;
+   CT.S = [[0, 0], [0.15, 0.15], [0.35, 0.52], [0.65, 0.78], [1, 1]];
+   CT.executeOn(w.mainView);
+
+   // Cleanup
+   w.removeMask();
+   maskWin.forceClose();
+
+   return { target: targetId };
+};
+
+handlers.screen_blend_stars = function(params) {
+   // Recombine stars with starless using screen blend.
+   var targetId = params.target || params.targetId;
+   var starsId = params.starsWindowId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+   if (!starsId) throw new Error("Missing 'starsWindowId' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+   var starsW = ImageWindow.windowById(starsId);
+   if (starsW.isNull) throw new Error("Window '" + starsId + "' not found");
+
+   var amount = params.amount || 1.0;
+
+   // Screen blend: result = 1 - (1 - base) * (1 - overlay * amount)
+   var PM = new PixelMath;
+   PM.expression = "1 - (1 - $T) * (1 - " + starsId + " * " + amount.toFixed(4) + ")";
+   PM.useSingleExpression = true;
+   PM.generateOutput = true;
+   PM.optimization = true;
+   PM.rescale = false;
+   PM.truncate = true;
+   PM.truncateLower = 0;
+   PM.truncateUpper = 1;
+   PM.createNewImage = false;
+   PM.executeOn(w.mainView);
+
+   return { target: targetId, starsWindow: starsId, amount: amount };
+};
+
+handlers.s_curve = function(params) {
+   // S-curve contrast adjustment with configurable strength.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var strength = params.strength || "moderate";
+
+   var CT = new CurvesTransformation;
+   CT.Kt = 2; // Akima
+
+   if (strength === "gentle") {
+      CT.K = [[0, 0], [0.02, 0.01], [0.15, 0.13], [0.50, 0.52], [0.85, 0.87], [1, 1]];
+   } else if (strength === "strong") {
+      CT.K = [[0, 0], [0.02, 0.00], [0.08, 0.05], [0.25, 0.30], [0.60, 0.68], [0.85, 0.90], [1, 1]];
+   } else { // moderate
+      CT.K = [[0, 0], [0.02, 0.005], [0.10, 0.08], [0.30, 0.34], [0.60, 0.64], [0.85, 0.87], [1, 1]];
+   }
+
+   CT.executeOn(w.mainView);
+
+   return { target: targetId, strength: strength };
+};
+
+handlers.check_dynamic_range = function(params) {
+   // Check for clipping or black crush.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var img = w.mainView.image;
+   var r = new Rect(img.width, img.height);
+   var totalPixels = img.width * img.height;
+
+   var channels = [];
+   var issues = [];
+
+   for (var c = 0; c < img.numberOfChannels && c < 3; c++) {
+      var min = img.minimum(r, c, c);
+      var max = img.maximum(r, c, c);
+      var med = img.median(r, c, c);
+      var mean = img.mean(r, c, c);
+
+      channels.push({
+         channel: c,
+         min: min,
+         max: max,
+         median: med,
+         mean: mean
+      });
+
+      // Check for clipping (>3% above 0.95)
+      if (max >= 0.999) {
+         issues.push("Channel " + c + ": highlight clipping detected (max=" + max.toFixed(4) + ")");
+      }
+
+      // Check for black crush (median too low)
+      if (med < 0.05) {
+         issues.push("Channel " + c + ": possible black crush (median=" + med.toFixed(4) + ")");
+      }
+   }
+
+   return {
+      target: targetId,
+      channels: channels,
+      issues: issues,
+      healthy: issues.length === 0
+   };
+};
+
 handlers.run_script = function(params) {
    var code = params.code;
    if (!code) throw new Error("Missing 'code' parameter");
