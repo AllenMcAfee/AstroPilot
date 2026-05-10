@@ -13,6 +13,7 @@
 const bridge = require('./client');
 const { scanDirectory } = require('../lib/classifier');
 const { stackSession, stackByFilter } = require('../lib/stacker');
+const { linearPreprocess, checkTools } = require('../lib/linear-preprocess');
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -41,6 +42,8 @@ if (!command) {
    console.log('  scan <directory>              Scan and classify FITS/XISF files');
    console.log('  scan <directory> --json       Same, but output as JSON');
    console.log('  stack <directory> [outDir]    Calibrate, register, and stack');
+   console.log('  linear <windowId>            Linear pre-processing (gradients, color cal, NR)');
+   console.log('  tools                        Check which PI processes are installed');
    console.log('');
    console.log('  shutdown                      Stop the watcher');
    process.exit(0);
@@ -233,6 +236,32 @@ async function main() {
                for (const [filter, r] of Object.entries(result)) {
                   console.log('  ' + filter + ': ' + r.resultPath);
                }
+            }
+            break;
+         }
+         case 'tools': {
+            const tools = await checkTools();
+            console.log('Installed processes:');
+            for (const [name, installed] of Object.entries(tools)) {
+               console.log('  ' + (installed ? '+' : '-') + ' ' + name);
+            }
+            break;
+         }
+         case 'linear': {
+            if (!args[1]) { console.error('Usage: linear <windowId> [--stars] [--no-gradient] [--no-color] [--no-nr] [--no-deconv]'); process.exit(1); }
+            const linOpts = {
+               extractStars: args.includes('--stars'),
+               gradientRemoval: !args.includes('--no-gradient'),
+               colorCalibration: !args.includes('--no-color'),
+               noiseReduction: !args.includes('--no-nr'),
+               deconvolution: !args.includes('--no-deconv')
+            };
+            const linResult = await linearPreprocess(args[1], linOpts);
+            console.log('');
+            console.log('Steps:');
+            for (const step of linResult.steps) {
+               const icon = step.method === 'skipped' ? '~' : step.method === 'failed' ? 'x' : '+';
+               console.log('  ' + icon + ' ' + step.step + ': ' + step.method);
             }
             break;
          }

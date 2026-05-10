@@ -953,6 +953,275 @@ handlers.crop_stacking_edges = function(params) {
    return { target: targetId, cropped: false, reason: "No stacking edges detected" };
 };
 
+// ---- Linear Pre-Processing Command Handlers ----
+
+handlers.check_installed_processes = function(params) {
+   // Check which optional processes/scripts are available.
+   var processes = params.processes || [
+      "NoiseXTerminator", "BlurXTerminator", "StarXTerminator",
+      "SpectrophotometricColorCalibration", "PhotometricColorCalibration",
+      "AutomaticBackgroundExtractor", "GradientCorrection",
+      "BackgroundNeutralization", "MultiscaleLinearTransform"
+   ];
+
+   var available = {};
+   for (var i = 0; i < processes.length; i++) {
+      try {
+         eval("new " + processes[i]);
+         available[processes[i]] = true;
+      } catch (e) {
+         available[processes[i]] = false;
+      }
+   }
+   return available;
+};
+
+handlers.gradient_removal = function(params) {
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var method = params.method || "auto";
+
+   // Try ABE first (generally more robust), fall back to GradientCorrection
+   if (method === "auto" || method === "ABE") {
+      try {
+         var ABE = new AutomaticBackgroundExtractor;
+         ABE.tolerance = params.tolerance || 1.0;
+         ABE.deviation = params.deviation || 0.8;
+         ABE.unbalance = params.unbalance || 1.8;
+         ABE.minBoxFraction = 0.05;
+         ABE.maxBackground = 1.0;
+         ABE.minBackground = 0.0;
+         ABE.useLargeScaleRejection = true;
+         ABE.useSmallScaleRejection = true;
+         ABE.polyDegree = params.polyDegree || 4;
+         ABE.replaceTarget = true;
+         ABE.discardModel = true;
+         ABE.executeOn(w.mainView);
+
+         return { target: targetId, method: "ABE", polyDegree: ABE.polyDegree };
+      } catch (e) {
+         if (method === "ABE") throw e;
+         // Fall through to GradientCorrection
+      }
+   }
+
+   // GradientCorrection fallback
+   try {
+      var GC = new GradientCorrection;
+      GC.executeOn(w.mainView);
+      return { target: targetId, method: "GradientCorrection" };
+   } catch (e) {
+      throw new Error("No gradient removal process available: " + e.message);
+   }
+};
+
+handlers.background_neutralization = function(params) {
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var BN = new BackgroundNeutralization;
+
+   // Use a region of interest if provided, otherwise auto
+   if (params.previewId) {
+      BN.backgroundReferenceViewId = params.previewId;
+   }
+
+   BN.backgroundLow = params.backgroundLow || 0.0;
+   BN.backgroundHigh = params.backgroundHigh || 0.1;
+   BN.useROI = false;
+   BN.mode = 0; // TargetBackground
+
+   BN.executeOn(w.mainView);
+
+   var img = w.mainView.image;
+   var r = new Rect(img.width, img.height);
+
+   return {
+      target: targetId,
+      afterMedians: {
+         R: img.median(r, 0, 0),
+         G: img.numberOfChannels > 1 ? img.median(r, 1, 1) : null,
+         B: img.numberOfChannels > 2 ? img.median(r, 2, 2) : null
+      }
+   };
+};
+
+handlers.color_calibration = function(params) {
+   // Try SPCC first (better), fall back to PCC
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var method = params.method || "auto";
+
+   // Try SPCC
+   if (method === "auto" || method === "SPCC") {
+      try {
+         var SPCC = new SpectrophotometricColorCalibration;
+
+         if (params.whiteReference) SPCC.whiteReferenceSpectrum = params.whiteReference;
+         SPCC.applyCalibration = true;
+         SPCC.narrowbandMode = params.narrowband || false;
+         SPCC.fractionalSampleClipping = params.sampleClipping || 0.1;
+         SPCC.structureLayers = params.structureLayers || 5;
+         SPCC.minStructureSize = 0;
+
+         SPCC.executeOn(w.mainView);
+
+         return { target: targetId, method: "SPCC" };
+      } catch (e) {
+         if (method === "SPCC") throw e;
+         // Fall through to PCC
+      }
+   }
+
+   // PCC fallback
+   if (method === "auto" || method === "PCC") {
+      try {
+         var PCC = new PhotometricColorCalibration;
+
+         if (params.solverFocalLength) PCC.focalLength = params.solverFocalLength;
+         if (params.solverPixelSize) PCC.pixelSize = params.solverPixelSize;
+         PCC.applyCalibration = true;
+
+         PCC.executeOn(w.mainView);
+
+         return { target: targetId, method: "PCC" };
+      } catch (e) {
+         if (method === "PCC") throw e;
+      }
+   }
+
+   throw new Error("No color calibration process available");
+};
+
+handlers.linear_noise_reduction = function(params) {
+   // NoiseXTerminator if available, else MultiscaleLinearTransform
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var method = params.method || "auto";
+
+   // Try NoiseXTerminator
+   if (method === "auto" || method === "NXT") {
+      try {
+         var NXT = new NoiseXTerminator;
+         NXT.denoise = params.denoise || 0.9;
+         NXT.detail = params.detail || 0.15;
+         NXT.executeOn(w.mainView);
+
+         return { target: targetId, method: "NoiseXTerminator", denoise: NXT.denoise, detail: NXT.detail };
+      } catch (e) {
+         if (method === "NXT") throw e;
+      }
+   }
+
+   // MLT fallback — gentle linear noise reduction
+   if (method === "auto" || method === "MLT") {
+      try {
+         var MLT = new MultiscaleLinearTransform;
+
+         // 4 wavelet layers, reduce noise on the first two layers only
+         var layers = [
+            [true, true, params.layer1NR || 3.0, false, 0, false, 0],  // layer 1: strong NR
+            [true, true, params.layer2NR || 2.0, false, 0, false, 0],  // layer 2: moderate NR
+            [true, true, params.layer3NR || 1.0, false, 0, false, 0],  // layer 3: light NR
+            [true, true, 0.5, false, 0, false, 0],                     // layer 4: very light
+            [true, true, 0, false, 0, false, 0]                        // residual: untouched
+         ];
+         MLT.layers = layers;
+         MLT.transform = 0; // StarletTransform
+         MLT.scaleDelta = 0;
+         MLT.linearMask = true;
+
+         MLT.executeOn(w.mainView);
+
+         return { target: targetId, method: "MultiscaleLinearTransform" };
+      } catch (e) {
+         if (method === "MLT") throw e;
+      }
+   }
+
+   return { target: targetId, method: "skipped", reason: "No suitable noise reduction available" };
+};
+
+handlers.deconvolution = function(params) {
+   // BlurXTerminator if available, else skip (classic deconvolution
+   // is too risky to automate without PSF measurement).
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   try {
+      var BXT = new BlurXTerminator;
+      BXT.sharpen_stars = params.sharpenStars || 0.5;
+      BXT.sharpen_nonstellar = params.sharpenNonstellar || 0.75;
+      BXT.psf = params.psf || 0;          // 0 = auto
+      BXT.adjust = params.adjust || 0;     // 0 = auto
+      BXT.executeOn(w.mainView);
+
+      return {
+         target: targetId,
+         method: "BlurXTerminator",
+         sharpenStars: BXT.sharpen_stars,
+         sharpenNonstellar: BXT.sharpen_nonstellar
+      };
+   } catch (e) {
+      return { target: targetId, method: "skipped", reason: "BlurXTerminator not available" };
+   }
+};
+
+handlers.star_extraction = function(params) {
+   // StarXTerminator if available for starless processing path.
+   // Creates two images: starless and stars-only.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   try {
+      var SXT = new StarXTerminator;
+      SXT.stars = true;           // generate stars image
+      SXT.unscreen = params.unscreen || true;
+      SXT.overlap = params.overlap || 0;
+      SXT.executeOn(w.mainView);
+
+      // Find the stars image — SXT creates it with a "_stars" suffix or similar
+      var starsId = null;
+      var windows = ImageWindow.windows;
+      for (var i = 0; i < windows.length; i++) {
+         var wId = windows[i].mainView.id;
+         if (wId !== targetId && wId.toLowerCase().indexOf("star") !== -1) {
+            starsId = wId;
+         }
+      }
+
+      return {
+         target: targetId,
+         method: "StarXTerminator",
+         starlessId: targetId,
+         starsId: starsId
+      };
+   } catch (e) {
+      return { target: targetId, method: "skipped", reason: "StarXTerminator not available" };
+   }
+};
+
 handlers.run_script = function(params) {
    var code = params.code;
    if (!code) throw new Error("Missing 'code' parameter");
