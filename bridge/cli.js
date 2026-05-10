@@ -19,6 +19,7 @@ const { lookupByName } = require('../lib/catalog');
 const { creativePipeline } = require('../lib/creative-pipeline');
 const { scoreImage } = require('../lib/scorer');
 const { writeReport } = require('../lib/report');
+const { annotateImage, buildAnnotationData } = require('../lib/annotate');
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -53,6 +54,7 @@ if (!command) {
    console.log('  creative <windowId>          Run adaptive creative processing pipeline');
    console.log('  score <windowId>             Score image quality (8 dimensions + gates)');
    console.log('  report <windowId> [outDir]   Generate processing report (HTML + MD + JSON)');
+   console.log('  annotate <windowId>          Add watermark, info panel, and metadata');
    console.log('  tools                        Check which PI processes are installed');
    console.log('');
    console.log('  shutdown                      Stop the watcher');
@@ -339,6 +341,44 @@ async function main() {
             console.log('  HTML:     ' + paths.html);
             console.log('  Markdown: ' + paths.markdown);
             console.log('  JSON:     ' + paths.json);
+            break;
+         }
+         case 'annotate': {
+            if (!args[1]) { console.error('Usage: annotate <windowId> [--author="Name"] [--location="Place"] [--bortle=4] [--no-panel] [--no-watermark]'); process.exit(1); }
+            const annId = args[1];
+
+            // Parse options
+            const annOpts = {};
+            for (const arg of args.slice(2)) {
+               if (arg.startsWith('--author=')) annOpts.author = arg.slice(9).replace(/^"|"$/g, '');
+               if (arg.startsWith('--location=')) annOpts.location = arg.slice(11).replace(/^"|"$/g, '');
+               if (arg.startsWith('--bortle=')) annOpts.bortle = arg.slice(9);
+            }
+            const noPanel = args.includes('--no-panel');
+            const noWatermark = args.includes('--no-watermark');
+
+            // Classify target
+            console.log('Classifying target...');
+            const annClassInfo = await classifyTarget(annId, { plateSolve: false });
+
+            // Build annotation data
+            const annData = buildAnnotationData(annClassInfo, null, annOpts);
+
+            const annotateOpts = {};
+            if (!noWatermark && annData.watermark) annotateOpts.watermark = annData.watermark;
+            if (!noPanel && annData.infoPanel) annotateOpts.infoPanel = annData.infoPanel;
+            if (annData.metadata) annotateOpts.metadata = annData.metadata;
+
+            const annResult = await annotateImage(annId, annotateOpts);
+
+            console.log('');
+            console.log('Annotation complete:');
+            for (const step of annResult.steps) {
+               if (step.step === 'metadata') console.log('  Metadata: ' + step.keywords + ' keywords embedded');
+               if (step.step === 'watermark') console.log('  Watermark: "' + step.text + '" at ' + step.position);
+               if (step.step === 'info_panel') console.log('  Info panel: ' + step.lines + ' lines, new window: ' + step.newWindow);
+            }
+            console.log('  Final image: ' + annResult.finalTargetId);
             break;
          }
          case 'creative': {

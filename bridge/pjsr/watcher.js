@@ -2090,6 +2090,212 @@ handlers.measure_tonal_balance = function(params) {
    };
 };
 
+// ---- Annotation & Watermark Command Handlers (Phase 7) ----
+
+handlers.watermark = function(params) {
+   // Draw text watermark on the image using PixelMath annotation.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+   var text = params.text;
+   if (!text) throw new Error("Missing 'text' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var img = w.mainView.image;
+   var iw = img.width;
+   var ih = img.height;
+
+   var fontSize = params.fontSize || Math.max(12, Math.round(Math.min(iw, ih) * 0.018));
+   var opacity = params.opacity || 0.5;
+   var position = params.position || "bottom-right"; // top-left, top-right, bottom-left, bottom-right, bottom-center
+   var color = params.color || 0.85; // grayscale value 0-1
+
+   // Use Annotation process
+   var AN = new Annotation;
+   AN.annotationText = text;
+   AN.annotationFont = params.font || "Helvetica";
+   AN.annotationFontSize = fontSize;
+   AN.annotationFontBold = params.bold !== false;
+   AN.annotationFontItalic = params.italic || false;
+   AN.annotationColor = 4294967295; // white (AARRGGBB)
+   AN.annotationOpacity = Math.round(opacity * 255);
+
+   // Calculate position
+   var margin = Math.round(fontSize * 1.5);
+   var textWidth = text.length * fontSize * 0.6; // rough estimate
+
+   if (position === "top-left") {
+      AN.annotationPositionX = margin;
+      AN.annotationPositionY = margin;
+   } else if (position === "top-right") {
+      AN.annotationPositionX = iw - textWidth - margin;
+      AN.annotationPositionY = margin;
+   } else if (position === "bottom-left") {
+      AN.annotationPositionX = margin;
+      AN.annotationPositionY = ih - margin - fontSize;
+   } else if (position === "bottom-center") {
+      AN.annotationPositionX = Math.round(iw / 2 - textWidth / 2);
+      AN.annotationPositionY = ih - margin - fontSize;
+   } else { // bottom-right
+      AN.annotationPositionX = iw - textWidth - margin;
+      AN.annotationPositionY = ih - margin - fontSize;
+   }
+
+   AN.executeOn(w.mainView);
+
+   return {
+      target: targetId,
+      text: text,
+      position: position,
+      fontSize: fontSize,
+      opacity: opacity
+   };
+};
+
+handlers.info_panel = function(params) {
+   // Add a border panel below the image with target and acquisition info.
+   // Extends the canvas downward, fills with dark background, draws text.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var img = w.mainView.image;
+   var iw = img.width;
+   var ih = img.height;
+
+   var fontSize = params.fontSize || Math.max(11, Math.round(iw * 0.013));
+   var panelHeight = params.panelHeight || Math.round(fontSize * 8);
+   var bgValue = params.bgValue || 0.08; // dark gray
+
+   // Build info lines
+   var lines = [];
+   if (params.targetName) lines.push(params.targetName);
+   if (params.designations) lines.push(params.designations);
+   if (params.constellation) lines.push("Constellation: " + params.constellation);
+   if (params.integration) lines.push("Integration: " + params.integration);
+   if (params.equipment) lines.push(params.equipment);
+   if (params.date) lines.push(params.date);
+   if (params.location) lines.push(params.location);
+   if (params.bortle) lines.push("Bortle: " + params.bortle);
+   if (params.processing) lines.push(params.processing);
+
+   // Extend canvas downward
+   var newHeight = ih + panelHeight;
+   var CP = new CanvasSize;
+   // Not available as process — use Crop with negative values
+   // Actually, use PixelMath to create extended image
+
+   // Create new window with extended size
+   var newId = targetId + "_annotated";
+   var newWin = new ImageWindow(iw, newHeight, img.numberOfChannels,
+                                 img.bitsPerSample, img.isReal, img.isColor, newId);
+
+   // Fill with background color
+   newWin.mainView.beginProcess();
+   var newImg = newWin.mainView.image;
+
+   // Fill panel area with dark background
+   var PM = new PixelMath;
+   PM.expression = String(bgValue);
+   PM.useSingleExpression = true;
+   PM.createNewImage = false;
+   PM.rescale = false;
+   PM.truncate = true;
+   PM.executeOn(newWin.mainView);
+
+   newWin.mainView.endProcess();
+
+   // Copy original image into top portion
+   newWin.mainView.beginProcess();
+   // Use PixelMath with coordinates
+   // Actually, blend the original on top
+   var PM2 = new PixelMath;
+   PM2.expression = "iif(y() < " + ih + ", " + targetId + "(x(), y()), " + bgValue + ")";
+   PM2.useSingleExpression = true;
+   PM2.createNewImage = false;
+   PM2.rescale = false;
+   PM2.truncate = true;
+   PM2.executeOn(newWin.mainView);
+   newWin.mainView.endProcess();
+
+   // Draw text lines using Annotation
+   var lineHeight = Math.round(fontSize * 1.5);
+   var startY = ih + Math.round(fontSize * 0.8);
+   var margin = Math.round(iw * 0.03);
+
+   for (var i = 0; i < lines.length; i++) {
+      var AN = new Annotation;
+      AN.annotationText = lines[i];
+      AN.annotationFont = "Helvetica";
+      AN.annotationFontSize = (i === 0) ? Math.round(fontSize * 1.4) : fontSize;
+      AN.annotationFontBold = (i === 0);
+      AN.annotationFontItalic = false;
+      AN.annotationColor = 4294967295;
+      AN.annotationOpacity = (i === 0) ? 230 : 180;
+      AN.annotationPositionX = margin;
+      AN.annotationPositionY = startY + (i * lineHeight);
+      AN.executeOn(newWin.mainView);
+   }
+
+   newWin.show();
+
+   return {
+      originalTarget: targetId,
+      annotatedTarget: newId,
+      panelHeight: panelHeight,
+      linesDrawn: lines.length
+   };
+};
+
+handlers.embed_metadata = function(params) {
+   // Set FITS keywords on an image for metadata embedding.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var keywords = params.keywords || {};
+   var existingKw = w.keywords;
+   var newKw = [];
+
+   // Preserve existing keywords
+   for (var i = 0; i < existingKw.length; i++) {
+      var keep = true;
+      for (var key in keywords) {
+         if (keywords.hasOwnProperty(key) && existingKw[i].name === key) {
+            keep = false;
+            break;
+         }
+      }
+      if (keep) newKw.push(existingKw[i]);
+   }
+
+   // Add/update keywords
+   for (var key in keywords) {
+      if (keywords.hasOwnProperty(key)) {
+         var val = keywords[key];
+         var comment = "";
+         if (typeof val === "object" && val !== null && val.value !== undefined) {
+            comment = val.comment || "";
+            val = val.value;
+         }
+         newKw.push(new FITSKeyword(key, String(val), comment));
+      }
+   }
+
+   w.keywords = newKw;
+
+   return {
+      target: targetId,
+      keywordsSet: Object.keys(keywords).length,
+      totalKeywords: newKw.length
+   };
+};
+
 handlers.run_script = function(params) {
    var code = params.code;
    if (!code) throw new Error("Missing 'code' parameter");
