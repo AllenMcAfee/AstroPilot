@@ -19,7 +19,7 @@
 var BRIDGE_BASE = File.homeDirectory + "/.astropilot/bridge";
 var COMMANDS_DIR = BRIDGE_BASE + "/commands";
 var RESULTS_DIR = BRIDGE_BASE + "/results";
-var POLL_INTERVAL_MS = 200;
+var POLL_INTERVAL_MS = 1000;
 var VERSION = "0.1.0";
 
 // ---- Directory Setup ----
@@ -32,17 +32,9 @@ function ensureDirectory(path) {
 
 // ---- File Helpers ----
 
-function readTextFile(path) {
-   var f = new File;
-   f.openForReading(path);
-   var size = f.size;
-   var buf = f.read(DataType_ByteArray, size);
-   f.close();
-   var text = "";
-   for (var i = 0; i < buf.length; i++) {
-      text += String.fromCharCode(buf.at(i));
-   }
-   return text;
+function readTextFile(filePath) {
+   var lines = File.readLines(filePath);
+   return lines.join("\n");
 }
 
 function writeTextFile(path, text) {
@@ -2418,17 +2410,38 @@ function checkForCommands() {
    console.noteln("AstroPilot: To stop, create a 'shutdown' file in the commands directory.");
    console.noteln("");
 
-   while (running) {
+   // Use a Dialog with a Timer to keep the script alive while letting PI
+   // process UI events. The dialog runs its own event loop, so PI stays
+   // responsive. The Timer fires periodically to check for commands.
+   var dlg = new Dialog;
+   dlg.windowTitle = "AstroPilot Watcher";
+   dlg.setMinSize(300, 80);
+
+   var watcherTimer = new Timer;
+   watcherTimer.interval = POLL_INTERVAL_MS / 1000.0;
+   watcherTimer.periodic = true;
+   watcherTimer.onTimeout = function() {
+      if (!running) {
+         watcherTimer.stop();
+         dlg.cancel();
+         return;
+      }
       try {
          checkForCommands();
       } catch (e) {
          console.warningln("AstroPilot: Poll error: " + e.message);
       }
-      processEvents();
-      msleep(POLL_INTERVAL_MS);
-   }
+   };
 
-   // Cleanup
+   dlg.onShow = function() {
+      watcherTimer.start();
+   };
+
+   dlg.execute();
+
+   // Cleanup after dialog closes
+   watcherTimer.stop();
+   running = false;
    deleteFile(BRIDGE_BASE + "/watcher.pid");
    console.noteln("AstroPilot: Watcher stopped.");
 })();
