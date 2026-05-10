@@ -39,12 +39,12 @@ try {
    }
 
    var f = new File;
-   f.createForWriting("C:/Users/allen/pi_analyze_output.txt");
+   f.createForWriting(File.homeDirectory + "/pi_analyze_output.txt");
    f.outTextLn(output.join("\n"));
    f.close();
 } catch(e) {
    var f = new File;
-   f.createForWriting("C:/Users/allen/pi_analyze_output.txt");
+   f.createForWriting(File.homeDirectory + "/pi_analyze_output.txt");
    f.outTextLn("ERROR: " + e.message);
    f.close();
 }

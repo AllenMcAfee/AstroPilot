@@ -20,6 +20,9 @@ const { creativePipeline } = require('../lib/creative-pipeline');
 const { scoreImage } = require('../lib/scorer');
 const { writeReport } = require('../lib/report');
 const { annotateImage, buildAnnotationData } = require('../lib/annotate');
+const { getPlatformInfo } = require('../lib/platform');
+const config = require('../lib/config');
+const equipment = require('../lib/equipment');
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -56,6 +59,19 @@ if (!command) {
    console.log('  report <windowId> [outDir]   Generate processing report (HTML + MD + JSON)');
    console.log('  annotate <windowId>          Add watermark, info panel, and metadata');
    console.log('  tools                        Check which PI processes are installed');
+   console.log('');
+   console.log('Setup:');
+   console.log('  init                          First-run setup wizard');
+   console.log('  config                        Show current configuration');
+   console.log('  config set <key> <value>      Set a config value');
+   console.log('  info                          Show platform and install details');
+   console.log('  install-watcher [piPath]      Install watcher to PixInsight scripts');
+   console.log('');
+   console.log('Equipment:');
+   console.log('  equipment list                List saved equipment profiles');
+   console.log('  equipment show <name>         Show a profile');
+   console.log('  equipment create <name>       Create a new profile (JSON on stdin)');
+   console.log('  equipment delete <name>       Delete a profile');
    console.log('');
    console.log('  shutdown                      Stop the watcher');
    process.exit(0);
@@ -347,8 +363,12 @@ async function main() {
             if (!args[1]) { console.error('Usage: annotate <windowId> [--author="Name"] [--location="Place"] [--bortle=4] [--no-panel] [--no-watermark]'); process.exit(1); }
             const annId = args[1];
 
-            // Parse options
+            // Parse options (fall back to saved config)
+            const savedConfig = config.getConfig();
             const annOpts = {};
+            if (savedConfig.author) annOpts.author = savedConfig.author;
+            if (savedConfig.location) annOpts.location = savedConfig.location;
+            if (savedConfig.bortle) annOpts.bortle = String(savedConfig.bortle);
             for (const arg of args.slice(2)) {
                if (arg.startsWith('--author=')) annOpts.author = arg.slice(9).replace(/^"|"$/g, '');
                if (arg.startsWith('--location=')) annOpts.location = arg.slice(11).replace(/^"|"$/g, '');
@@ -428,6 +448,98 @@ async function main() {
             for (const step of linResult.steps) {
                const icon = step.method === 'skipped' ? '~' : step.method === 'failed' ? 'x' : '+';
                console.log('  ' + icon + ' ' + step.step + ': ' + step.method);
+            }
+            break;
+         }
+         case 'init': {
+            await config.runSetupWizard();
+            break;
+         }
+         case 'config': {
+            if (args[1] === 'set') {
+               if (!args[2] || !args[3]) { console.error('Usage: config set <key> <value>'); process.exit(1); }
+               const val = args[3] === 'true' ? true : args[3] === 'false' ? false : isNaN(args[3]) ? args[3] : Number(args[3]);
+               config.set(args[2], val);
+               console.log(args[2] + ' = ' + JSON.stringify(val));
+            } else {
+               config.displayConfig();
+            }
+            break;
+         }
+         case 'info': {
+            const info = getPlatformInfo();
+            console.log('Platform:     ' + info.platform + ' (' + info.arch + ')');
+            console.log('Node.js:      ' + info.nodeVersion);
+            console.log('Home:         ' + info.homeDir);
+            console.log('AstroPilot:   ' + info.astropilotDir);
+            console.log('');
+            if (info.pixinsight) {
+               console.log('PixInsight:   ' + info.pixinsight.path);
+               if (info.pixinsight.executable) console.log('  Executable: ' + info.pixinsight.executable);
+               if (info.pixinsight.scriptsDir) console.log('  Scripts:    ' + info.pixinsight.scriptsDir);
+            } else {
+               console.log('PixInsight:   not found (run "astropilot init" to configure)');
+            }
+            break;
+         }
+         case 'install-watcher': {
+            const piPath = args[1] || config.get('pixinsight.path');
+            if (!piPath) {
+               console.error('No PixInsight path configured. Run "astropilot init" first or pass a path.');
+               process.exit(1);
+            }
+            const installResult = config.installWatcherScript(piPath);
+            if (installResult.success) {
+               console.log('Watcher installed: ' + installResult.path);
+               console.log('Open PixInsight, go to Script > Run, and select this file.');
+            } else {
+               console.error('Install failed: ' + installResult.error);
+               process.exit(1);
+            }
+            break;
+         }
+         case 'equipment': {
+            const eqCmd = args[1];
+            if (!eqCmd || eqCmd === 'list') {
+               const profiles = equipment.listProfiles();
+               if (profiles.length === 0) {
+                  console.log('No equipment profiles saved.');
+                  console.log('Create one: astropilot equipment create "my-rig"');
+               } else {
+                  console.log(profiles.length + ' equipment profile(s):');
+                  for (const name of profiles) {
+                     const p = equipment.loadProfile(name);
+                     const summary = equipment.getEquipmentSummary(p);
+                     console.log('  ' + name + (summary ? '  (' + summary + ')' : ''));
+                  }
+               }
+            } else if (eqCmd === 'show') {
+               if (!args[2]) { console.error('Usage: equipment show <name>'); process.exit(1); }
+               const profile = equipment.loadProfile(args[2]);
+               equipment.displayProfile(profile);
+            } else if (eqCmd === 'create') {
+               if (!args[2]) { console.error('Usage: equipment create <name> [jsonFile]'); process.exit(1); }
+               const eqName = args[2];
+               let eqOpts = {};
+               if (args[3]) {
+                  // Read options from JSON file
+                  const fs = require('fs');
+                  eqOpts = JSON.parse(fs.readFileSync(args[3], 'utf-8'));
+               }
+               const profile = equipment.createProfile(eqName, eqOpts);
+               console.log('Created equipment profile: ' + eqName);
+               equipment.displayProfile(profile);
+            } else if (eqCmd === 'delete') {
+               if (!args[2]) { console.error('Usage: equipment delete <name>'); process.exit(1); }
+               if (equipment.deleteProfile(args[2])) {
+                  console.log('Deleted: ' + args[2]);
+               } else {
+                  console.log('Profile not found: ' + args[2]);
+               }
+            } else {
+               console.error('Unknown equipment command: ' + eqCmd);
+               console.error('Try: list, show, create, delete');
+               process.exit(1);
             }
             break;
          }

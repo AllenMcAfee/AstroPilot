@@ -44,12 +44,12 @@ try {
    output.push("ACDNR noise reduction applied");
 
    var f = new File;
-   f.createForWriting("C:/Users/allen/pi_nr_output.txt");
+   f.createForWriting(File.homeDirectory + "/pi_nr_output.txt");
    f.outTextLn(output.join("\n"));
    f.close();
 } catch(e) {
    var f = new File;
-   f.createForWriting("C:/Users/allen/pi_nr_output.txt");
+   f.createForWriting(File.homeDirectory + "/pi_nr_output.txt");
    f.outTextLn("ERROR: " + e.message);
    f.close();
 }

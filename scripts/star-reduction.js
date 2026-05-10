@@ -52,12 +52,12 @@ try {
    output.push("Star reduction applied (erosion, 2 iterations, 70% amount)");
 
    var f = new File;
-   f.createForWriting("C:/Users/allen/pi_starreduce_output.txt");
+   f.createForWriting(File.homeDirectory + "/pi_starreduce_output.txt");
    f.outTextLn(output.join("\n"));
    f.close();
 } catch(e) {
    var f = new File;
-   f.createForWriting("C:/Users/allen/pi_starreduce_output.txt");
+   f.createForWriting(File.homeDirectory + "/pi_starreduce_output.txt");
    f.outTextLn("ERROR: " + e.message);
    f.close();
 }

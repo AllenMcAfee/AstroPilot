@@ -32,22 +32,50 @@ AstroPilot uses a file-based bridge to communicate with PixInsight. There are tw
 
 ## Getting started
 
-You need PixInsight 1.9+ and Node.js.
+You need PixInsight 1.9+ and Node.js 16+. Works on Windows, macOS, and Linux.
+
+**Install from npm:**
+
+```bash
+npm install -g astropilot
+```
+
+**Or clone and link:**
+
+```bash
+git clone https://github.com/AllenMcAfee/AstroPilot.git
+cd AstroPilot
+npm link
+```
+
+**First-run setup:**
+
+```bash
+# run the setup wizard — detects PixInsight, sets your name, location, etc.
+astropilot init
+
+# or install the watcher manually
+astropilot install-watcher
+```
+
+**Start processing:**
 
 1. Open PixInsight
-2. Run the watcher: **Script > Run** and select `bridge/pjsr/watcher.js`
+2. Run the watcher: **Script > Run** and select the installed `AstroPilot/watcher.js`
 3. From a terminal:
 
 ```bash
 # check the watcher is alive
-node bridge/cli.js ping
+astropilot ping
 
 # see what images are open
-node bridge/cli.js list
+astropilot list
 
 # get stats for an image
-node bridge/cli.js stats MyImage
+astropilot stats MyImage
 ```
+
+You can also run directly without installing globally: `node bridge/cli.js <command>`.
 
 ## Common workflows
 
@@ -154,6 +182,20 @@ node bridge/cli.js pipeline MyImage
 | `report <id> [outDir]` | Generate HTML + Markdown + JSON report |
 | `annotate <id>` | Add watermark, info panel, and metadata |
 
+**Setup & Equipment:**
+
+| Command | What it does |
+|---------|-------------|
+| `init` | First-run setup wizard |
+| `config` | Show current configuration |
+| `config set <key> <value>` | Change a config value |
+| `info` | Show platform and PixInsight install details |
+| `install-watcher [piPath]` | Install watcher script to PixInsight |
+| `equipment list` | List saved equipment profiles |
+| `equipment show <name>` | Show an equipment profile |
+| `equipment create <name> [json]` | Create an equipment profile |
+| `equipment delete <name>` | Delete an equipment profile |
+
 ## Using the client library
 
 If you want to build on top of AstroPilot, the client is a CommonJS module:
@@ -201,9 +243,13 @@ lib/
   scorer.js          8-dimension scoring engine and quality gates
   report.js          HTML / Markdown / JSON report generator
   annotate.js        Watermark, info panel, and metadata embedding
+  platform.js        Cross-platform support (Windows, macOS, Linux)
+  config.js          Configuration management and setup wizard
+  equipment.js       Equipment profile management
 
 scripts/             Original standalone PJSR scripts
 docs/ROADMAP.md      Full project roadmap
+package.json         npm package definition
 ```
 
 ## Optional dependencies
@@ -220,7 +266,7 @@ AstroPilot works with or without these — it adapts automatically:
 
 ## What's next
 
-Phases 8 and 9 cover cross-platform support (macOS, Linux), npm packaging, configuration wizard, equipment profiles, processing recipe sharing, AstroBin integration, and a learning system that improves over time. See `docs/ROADMAP.md` for the full plan.
+Phase 9 covers community features: processing recipe sharing, a learning system that improves from each session, AstroBin integration, and skill progression tracking. See `docs/ROADMAP.md` for the full plan.
 
 ## License
 

@@ -260,17 +260,20 @@ Adds professional artist marks and informative metadata to the final image.
 
 ## Phase 8 — Multi-Platform & Distribution
 
-**Status: Planned**
+**Status: Complete**
 
-**Goal: Work on Windows, macOS, and Linux; easy installation**
+Cross-platform support, npm packaging, configuration management, and equipment profiles.
 
-- [ ] Windows support (current platform — already working via MSYS2/bash)
-- [ ] macOS support (adapt bridge paths)
-- [ ] Linux support
-- [ ] npm package for easy installation
-- [ ] PixInsight script installer (watcher auto-install)
-- [ ] Configuration wizard (first-run setup)
-- [ ] Equipment profile management (save/load telescope+camera configs)
+- [x] Windows support (primary development platform)
+- [x] macOS support (platform detection, PI app bundle paths, executable lookup)
+- [x] Linux support (platform detection, standard PI install paths)
+- [x] npm package (`package.json` with bin entry, `npm install -g astropilot`)
+- [x] PixInsight script installer (`install-watcher` command copies watcher to PI scripts)
+- [x] Configuration wizard (`init` command — detects PI, sets author/location/bortle)
+- [x] Equipment profile management (save/load telescope+camera+mount configs)
+- [x] Cross-platform path resolution (`lib/platform.js` — PI finder, scripts dir, executable)
+- [x] Config persistence (`~/.astropilot/config.json` with dot-path get/set)
+- [x] Legacy scripts updated (hardcoded paths replaced with `File.homeDirectory`)
 
 ---
 
