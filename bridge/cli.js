@@ -11,6 +11,7 @@
 //   node bridge/cli.js status
 
 const bridge = require('./client');
+const { scanDirectory } = require('../lib/classifier');
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -34,6 +35,10 @@ if (!command) {
    console.log('  star-reduction <id>           Star mask + morphological erosion');
    console.log('  enhance <id>                  LHE + saturation + S-curve');
    console.log('  pipeline <id>                 Run full recommended pipeline');
+   console.log('');
+   console.log('Pre-processing:');
+   console.log('  scan <directory>              Scan and classify FITS/XISF files');
+   console.log('  scan <directory> --json       Same, but output as JSON');
    console.log('');
    console.log('  shutdown                      Stop the watcher');
    process.exit(0);
@@ -187,6 +192,16 @@ async function main() {
             en.stepsApplied.forEach(function(s) { console.log('      ' + s); });
 
             console.log('\nPipeline complete!');
+            break;
+         }
+         case 'scan': {
+            if (!args[1]) { console.error('Usage: scan <directory> [--json]'); process.exit(1); }
+            const session = scanDirectory(args[1]);
+            if (args.includes('--json')) {
+               console.log(JSON.stringify(session.toJSON(), null, 2));
+            } else {
+               console.log(session.summary());
+            }
             break;
          }
          case 'shutdown': {
