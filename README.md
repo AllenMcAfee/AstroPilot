@@ -2,33 +2,33 @@
 
 AstroPilot is my attempt to take the pain out of astrophotography processing. If you've ever stared at a freshly stacked image in PixInsight and thought "okay, now what?" — this is for you.
 
-It talks to a running PixInsight instance through a simple bridge protocol, so you can run processing steps from the command line, chain them into a full pipeline, or eventually let it figure out the right workflow for your target automatically.
+It talks to a running PixInsight instance through a JSON bridge protocol, classifies your target, picks a processing strategy, runs the whole pipeline, scores the result, and writes a report explaining what it did and why. The goal is to go from raw sub-exposures to a finished, annotated image with zero hand-holding — while teaching you something along the way.
 
-The long-term goal is to go from raw sub-exposures to a finished, annotated image with zero hand-holding — while actually explaining what it did and why, so you learn something along the way.
+## What it can do
 
-## What it does today
+**Pre-processing** — Scan a directory of FITS/XISF files, auto-classify lights/darks/flats/bias by reading headers, create master calibration frames, calibrate, measure subframe quality, register, stack with adaptive pixel rejection, and auto-crop stacking artifacts. Multi-filter sessions are handled automatically.
 
-AstroPilot handles the core post-stretch processing steps that come up in almost every session:
+**Target identification** — Looks up your target from FITS keywords or plate solving, matches it against a 77-object catalog covering the most commonly photographed deep-sky targets, and maps it to one of 12 processing types (spiral galaxy, emission nebula, globular cluster, etc.).
 
-- **Color balancing** — matches channel medians and standard deviations to a reference, so your background is neutral and your colors are even
-- **Background fix** — subtracts the per-channel floor so everything starts from true black
-- **Halo reduction** — builds a blurred model of the large-scale glow and subtracts it, keeping fine detail intact
-- **Noise reduction** — ACDNR with separate luminance and chrominance controls, structure protection, and star masking
-- **Star reduction** — generates a star mask, then applies morphological erosion to shrink bloated stars
-- **Enhancement** — local histogram equalization for dust lanes and structure, a midtone saturation curve, and an S-curve for contrast
-- **Image analysis** — per-channel statistics and FITS keyword readout
+**Adaptive processing** — Each target type has a processing profile that sets the stretch algorithm (statistical for galaxies, GHS for nebulae, arcsinh for clusters), noise reduction aggressiveness, star handling, detail enhancement, and color strategy. The pipeline doesn't use the same settings for M42 as it does for M13.
 
-Every operation goes through PixInsight's undo system, so nothing is destructive.
+**Linear pre-processing** — Gradient removal, background neutralization, color calibration (SPCC preferred, PCC fallback), linear noise reduction (NoiseXTerminator preferred, MultiscaleLinearTransform fallback), deconvolution (BlurXTerminator or skip), star extraction (StarXTerminator or skip). Every optional tool has a graceful fallback — the pipeline never fails because a plugin is missing.
 
-## How it works
+**Creative processing** — Four stretch algorithms, HDR multiscale transform for bright cores, dark structure enhancement for dust lanes, Ha and OIII blending with soft clamping, SCNR, selective saturation, star color enhancement, star reduction, screen blend recombination, S-curve contrast, and dynamic range validation.
 
-AstroPilot uses a file-based bridge to communicate with PixInsight. There are two sides to it:
+**Quality scoring** — Eight dimensions scored 0-100 (detail credibility, background quality, color naturalness, star integrity, tonal balance, subject separation, artifact detection, aesthetic coherence) plus five quality gates that must all pass before the image is considered done.
 
-**Inside PixInsight** — A watcher script (`bridge/pjsr/watcher.js`) runs as a long-lived polling loop. It watches a commands folder for incoming JSON files, executes them, and writes results back. You start it once per session from Script > Run.
+**Reports** — HTML report with a dark theme, score bars, quality gates, every processing step with "what was done / why it matters / tip for manual adjustment" explanations, acquisition summary, and a 27-term glossary. Also generates Markdown (for AstroBin descriptions) and JSON (machine-readable log).
 
-**Outside PixInsight** — A Node.js client (`bridge/client.js`) writes command files and polls for results. The CLI tool (`bridge/cli.js`) wraps this into a simple command-line interface.
+**Annotation** — Watermark with configurable text, position, and opacity. Info panel border with target name, catalog designations, integration time, equipment, date, location, and Bortle class. FITS metadata embedding with a processing hash for reproducibility.
 
-The bridge directory lives at `~/.astropilot/bridge/`. Commands go in, results come out. The watcher writes a `watcher.pid` file so the client knows it's alive, and you can stop it by dropping a `shutdown` sentinel file into the commands folder.
+## How the bridge works
+
+AstroPilot uses a file-based bridge to communicate with PixInsight. There are two sides:
+
+**Inside PixInsight** — A watcher script (`bridge/pjsr/watcher.js`) runs as a long-lived polling loop. It watches `~/.astropilot/bridge/commands/` for incoming JSON files, executes them, and writes results to `~/.astropilot/bridge/results/`. You start it once per session from Script > Run.
+
+**Outside PixInsight** — A Node.js client (`bridge/client.js`) writes command files and polls for results. The CLI tool (`bridge/cli.js`) wraps this into a command-line interface. The watcher writes a `watcher.pid` file so the client knows it's alive, and you can stop it by dropping a `shutdown` sentinel into the commands folder.
 
 ## Getting started
 
@@ -36,7 +36,7 @@ You need PixInsight 1.9+ and Node.js.
 
 1. Open PixInsight
 2. Run the watcher: **Script > Run** and select `bridge/pjsr/watcher.js`
-3. From a terminal, try it out:
+3. From a terminal:
 
 ```bash
 # check the watcher is alive
@@ -47,85 +47,180 @@ node bridge/cli.js list
 
 # get stats for an image
 node bridge/cli.js stats MyImage
+```
 
-# run a single step
+## Common workflows
+
+**Process a single image that's already open in PI:**
+
+```bash
+# classify it and see what profile gets selected
+node bridge/cli.js classify MyImage
+
+# run the adaptive creative pipeline
+node bridge/cli.js creative MyImage
+
+# score the result
+node bridge/cli.js score MyImage
+
+# generate a report
+node bridge/cli.js report MyImage ./output
+
+# add watermark and info panel
+node bridge/cli.js annotate MyImage --author="Your Name"
+```
+
+**Stack from raw subs:**
+
+```bash
+# scan a directory to see what you have
+node bridge/cli.js scan "D:/Astro/2024-01-15_M42"
+
+# stack it (handles calibration, registration, integration)
+node bridge/cli.js stack "D:/Astro/2024-01-15_M42"
+
+# then run linear pre-processing on the stacked result
+node bridge/cli.js linear integration1
+
+# then creative processing
+node bridge/cli.js creative integration1
+```
+
+**Run the old-school pipeline (individual steps):**
+
+```bash
 node bridge/cli.js color-balance MyImage
+node bridge/cli.js background-fix MyImage
 node bridge/cli.js dehalo MyImage 150 0.15
+node bridge/cli.js noise-reduction MyImage
+node bridge/cli.js star-reduction MyImage
+node bridge/cli.js enhance MyImage
 
-# run the full recommended pipeline
+# or all at once
 node bridge/cli.js pipeline MyImage
 ```
 
-## The pipeline
+## All CLI commands
 
-The `pipeline` command runs through the full recommended processing sequence. It re-balances colors after each major step, which matters more than you'd think — every operation shifts the channel distributions slightly.
-
-1. Analyze the image
-2. Color balance
-3. Background fix (remove channel floors)
-4. Color balance again
-5. Halo reduction
-6. Color balance again
-7. Noise reduction (ACDNR)
-8. Color balance again
-9. Star reduction
-10. Enhancement (LHE, saturation, contrast)
-
-You can also run any step individually if you just need one thing.
-
-## Available commands
-
-**Core:**
+**Bridge:**
 
 | Command | What it does |
 |---------|-------------|
-| `ping` | Health check — confirms the watcher is running |
-| `list` | Lists all open image windows |
+| `status` | Check if the watcher is running |
+| `ping` | Health check with version and uptime |
+| `list` | List all open image windows |
 | `stats <id>` | Per-channel statistics and FITS keywords |
 | `run "<code>"` | Execute arbitrary PJSR code |
 | `process <name> <id>` | Run any PixInsight process by name |
+| `tools` | Check which optional processes are installed |
+| `shutdown` | Stop the watcher |
 
-**Pipeline steps:**
+**Pre-processing:**
+
+| Command | What it does |
+|---------|-------------|
+| `scan <dir>` | Scan and classify FITS/XISF files |
+| `scan <dir> --json` | Same, but output as JSON |
+| `stack <dir> [outDir]` | Full stacking pipeline |
+
+**Processing:**
+
+| Command | What it does |
+|---------|-------------|
+| `linear <id>` | Linear pre-processing (gradients, color cal, NR) |
+| `linear <id> --stars` | Linear pre-processing + star extraction |
+| `classify <id>` | Identify target and show processing profile |
+| `lookup <name>` | Search the built-in target catalog |
+| `creative <id>` | Adaptive creative processing pipeline |
+| `creative <id> --ha=<id>` | With Ha blending |
+| `pipeline <id>` | Simple fixed processing pipeline |
+
+**Individual steps:**
 
 | Command | What it does |
 |---------|-------------|
 | `color-balance <id>` | Neutralize background, equalize channels |
 | `background-fix <id>` | Remove per-channel floor offsets |
-| `dehalo <id> [sigma] [amount]` | Subtract diffuse glow (defaults: sigma=150, amount=0.15) |
-| `noise-reduction <id>` | ACDNR with luminance/chrominance separation |
+| `dehalo <id> [sigma] [amount]` | Subtract diffuse glow |
+| `noise-reduction <id>` | ACDNR noise reduction |
 | `star-reduction <id>` | Star mask + morphological erosion |
-| `enhance <id>` | LHE + saturation boost + S-curve |
-| `pipeline <id>` | All of the above in the recommended order |
+| `enhance <id>` | LHE + saturation + S-curve |
+
+**Output:**
+
+| Command | What it does |
+|---------|-------------|
+| `score <id>` | Score image quality (8 dimensions + 5 gates) |
+| `report <id> [outDir]` | Generate HTML + Markdown + JSON report |
+| `annotate <id>` | Add watermark, info panel, and metadata |
 
 ## Using the client library
 
-If you want to build on top of AstroPilot, the client is a simple CommonJS module:
+If you want to build on top of AstroPilot, the client is a CommonJS module:
 
 ```javascript
 const bridge = require('./bridge/client');
 
+// basics
+await bridge.ping();
+const images = await bridge.listOpenImages();
 const stats = await bridge.getImageStatistics('MyImage');
-console.log(stats.channels);
 
+// pipeline steps
 await bridge.colorBalance('MyImage');
 await bridge.dehalo('MyImage', { sigma: 200, amount: 0.10 });
 await bridge.noiseReduction('MyImage', { sigmaL: 1.5, sigmaC: 4.0 });
 await bridge.enhance('MyImage', { lheRadius: 80, saturationBoost: true, sCurve: false });
-```
 
-All pipeline functions accept an options object to override defaults.
+// higher-level modules
+const { classifyTarget } = require('./lib/target-classifier');
+const { creativePipeline } = require('./lib/creative-pipeline');
+const { scoreImage } = require('./lib/scorer');
+const { writeReport } = require('./lib/report');
+const { annotateImage } = require('./lib/annotate');
+```
 
 ## Project structure
 
-- `bridge/pjsr/watcher.js` — the PixInsight-side watcher (PJSR / ECMAScript 5)
-- `bridge/client.js` — Node.js client library
-- `bridge/cli.js` — command-line interface
-- `scripts/` — the original standalone scripts (still work via `PixInsight.exe -x=`)
-- `docs/ROADMAP.md` — where this is all heading
+```
+bridge/
+  pjsr/watcher.js    PixInsight-side watcher (PJSR / ECMAScript 5)
+  client.js          Node.js bridge client
+  cli.js             Command-line interface
+
+lib/
+  fits-header.js     FITS header parser (no pixel data loaded)
+  xisf-header.js     XISF header parser
+  classifier.js      Frame classification (type, filter, target, equipment)
+  stacker.js         Stacking orchestrator (calibrate, register, integrate)
+  linear-preprocess.js  Linear pre-processing pipeline
+  catalog.js         77-object deep-sky target catalog
+  profiles.js        12 processing profiles by target type
+  target-classifier.js  Target identification and profile selection
+  creative-pipeline.js  Adaptive creative processing pipeline
+  scorer.js          8-dimension scoring engine and quality gates
+  report.js          HTML / Markdown / JSON report generator
+  annotate.js        Watermark, info panel, and metadata embedding
+
+scripts/             Original standalone PJSR scripts
+docs/ROADMAP.md      Full project roadmap
+```
+
+## Optional dependencies
+
+AstroPilot works with or without these — it adapts automatically:
+
+| Tool | Used for | Without it |
+|------|----------|-----------|
+| NoiseXTerminator | Linear noise reduction | Falls back to MultiscaleLinearTransform |
+| BlurXTerminator | Deconvolution | Skipped |
+| StarXTerminator | Star extraction for starless processing | Skipped |
+| GHS (script) | Nebula stretching | Falls back to STF auto-stretch |
+| SPCC | Color calibration | Falls back to PCC |
 
 ## What's next
 
-The roadmap covers a lot of ground — stacking from raw subs, automatic target identification, adaptive processing strategies, quality scoring, and educational reports. See `docs/ROADMAP.md` for the full plan.
+Phases 8 and 9 cover cross-platform support (macOS, Linux), npm packaging, configuration wizard, equipment profiles, processing recipe sharing, AstroBin integration, and a learning system that improves over time. See `docs/ROADMAP.md` for the full plan.
 
 ## License
 
