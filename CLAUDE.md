@@ -31,90 +31,57 @@ node bridge/cli.js ping
 
 ## The full processing workflow
 
-When the user wants to process astrophotography data, follow these steps in order. Each step depends on the previous one succeeding.
+### One command — raw subs to finished image
 
-### Step 1: Scan and understand the data
-
-```bash
-node bridge/cli.js scan "<directory>"
-```
-
-Read the output carefully. It tells you:
-- How many lights, darks, flats, biases were found
-- What filters are present
-- Exposure times, camera, gain, temperature
-- Whether calibration frames are missing or mismatched
-
-### Step 2: Validate calibration frames
+The fastest path. This scans, validates, stacks, and runs the entire processing pipeline:
 
 ```bash
-node bridge/cli.js validate "<directory>"
+node bridge/cli.js auto "<directory>"
 ```
 
-This checks that darks match lights (gain, offset, exposure, temperature, camera, binning), flats cover all filters, biases match gain/offset, etc. Read every error and warning. If there are **errors**, explain them to the user and ask how they want to proceed before stacking.
+This runs all 9 steps automatically: watcher check → scan → validate → stack → linear preprocess → classify → creative processing → score → report + annotate. It logs the session to memory and saves a recipe.
 
-### Step 3: Stack (requires watcher)
+Options:
+- `--force` — proceed despite validation errors
+- `--no-annotate` — skip watermark and info panel
+- `--author="Name"` — override saved author name
+- `--output="path"` — set output directory
+
+If `auto` hits a problem, it stops with a clear error. Read the output — it explains what went wrong.
+
+### One command — already-open image
+
+If the user has an image already open in PixInsight:
 
 ```bash
-node bridge/cli.js stack "<directory>"
+node bridge/cli.js auto-open <windowId>
 ```
 
-This creates master calibration frames, calibrates lights, measures subframe quality, registers, integrates, and auto-crops. It runs validation automatically and will refuse to stack if there are errors — use `--force` only if the user explicitly agrees.
+This skips scanning and stacking and goes straight to processing. Add `--linear` if the image hasn't been stretched yet (still linear from stacking).
 
-The output tells you the result window ID (e.g., `integration1`). You need this ID for all subsequent steps.
+### Running steps individually
 
-### Step 4: Linear pre-processing (requires watcher)
+If you need more control, or if `auto` failed at a specific step and you want to resume, run the steps one at a time:
 
 ```bash
-node bridge/cli.js linear <windowId>
+node bridge/cli.js scan "<directory>"       # 1. See what files you have
+node bridge/cli.js validate "<directory>"   # 2. Check calibration compatibility
+node bridge/cli.js stack "<directory>"      # 3. Stack (validates automatically)
+node bridge/cli.js linear <windowId>        # 4. Linear pre-processing
+node bridge/cli.js classify <windowId>      # 5. Identify target, select profile
+node bridge/cli.js creative <windowId>      # 6. Nonlinear processing
+node bridge/cli.js score <windowId>         # 7. Quality scoring
+node bridge/cli.js report <windowId> ./out  # 8. Generate reports
+node bridge/cli.js annotate <windowId>      # 9. Watermark + metadata
 ```
 
-Runs gradient removal, background neutralization, color calibration, noise reduction, and optionally deconvolution. Add `--stars` if starless processing is desired.
+The `stack` command outputs a result window ID. Use that ID for all subsequent commands.
 
-### Step 5: Classify the target (requires watcher)
-
-```bash
-node bridge/cli.js classify <windowId>
-```
-
-Identifies the target from FITS keywords or plate solving and selects a processing profile. Read the output — it tells you the target name, type, stretch algorithm, and processing parameters that will be used.
-
-### Step 6: Creative processing (requires watcher)
-
-```bash
-node bridge/cli.js creative <windowId>
-```
-
-Runs the full nonlinear pipeline: stretching, detail enhancement, color processing, star work, and final polish. All driven by the profile selected in Step 5.
-
-Optional narrowband flags:
-- `--ha=<windowId>` — blend Ha data
-- `--oiii=<windowId>` — blend OIII data
-- `--stars=<windowId>` — recombine extracted stars
-
-### Step 7: Score the result (requires watcher)
-
-```bash
-node bridge/cli.js score <windowId>
-```
-
-Scores the image on 8 dimensions (0-100 each) and checks 5 quality gates. Read the scores and gates carefully. If gates fail, explain what went wrong and suggest whether to re-process or adjust.
-
-### Step 8: Generate a report
-
-```bash
-node bridge/cli.js report <windowId> ./output
-```
-
-Creates HTML, Markdown, and JSON reports in the output directory. Tell the user where the files were written.
-
-### Step 9: Annotate (optional)
-
-```bash
-node bridge/cli.js annotate <windowId>
-```
-
-Adds watermark, info panel, and FITS metadata. Uses the author name and location from saved config. The user can override with `--author="Name"` `--location="Place"` `--bortle=4`.
+Optional flags for individual steps:
+- `linear --stars` — extract stars for starless processing
+- `creative --ha=<id> --oiii=<id>` — blend narrowband data
+- `stack --force` — ignore validation errors
+- `annotate --author="Name" --location="Place" --bortle=4`
 
 ## Commands that don't need PixInsight
 
@@ -142,15 +109,17 @@ Everything else: `ping`, `list`, `stats`, `run`, `process`, `stack`, `linear`, `
 
 ## When processing an already-open image
 
-If the user has an image already open in PixInsight and wants to process it (skipping stacking):
+Use `auto-open` for the simplest path:
 
 ```bash
-node bridge/cli.js list                    # find the window ID
-node bridge/cli.js classify <id>           # identify target, select profile
-node bridge/cli.js linear <id>             # if still linear (not yet stretched)
-node bridge/cli.js creative <id>           # nonlinear processing
-node bridge/cli.js score <id>              # evaluate result
-node bridge/cli.js report <id> ./output    # generate report
+node bridge/cli.js auto-open <windowId>            # if already stretched
+node bridge/cli.js auto-open <windowId> --linear    # if still linear
+```
+
+Or list images first to find the window ID:
+
+```bash
+node bridge/cli.js list
 ```
 
 ## When the user asks about a target

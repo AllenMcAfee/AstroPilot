@@ -79,56 +79,58 @@ You can also run directly without installing globally: `node bridge/cli.js <comm
 
 ## Common workflows
 
-**Process a single image that's already open in PI:**
+**Full autopilot — raw subs to finished image:**
 
 ```bash
-# classify it and see what profile gets selected
-node bridge/cli.js classify MyImage
-
-# run the adaptive creative pipeline
-node bridge/cli.js creative MyImage
-
-# score the result
-node bridge/cli.js score MyImage
-
-# generate a report
-node bridge/cli.js report MyImage ./output
-
-# add watermark and info panel
-node bridge/cli.js annotate MyImage --author="Your Name"
+# one command does everything: scan, validate, stack, process, score, report
+astropilot auto "D:/Astro/2024-01-15_M42"
 ```
 
-**Stack from raw subs:**
+**Process an image already open in PixInsight:**
 
 ```bash
-# scan a directory to see what you have
-node bridge/cli.js scan "D:/Astro/2024-01-15_M42"
-
-# stack it (handles calibration, registration, integration)
-node bridge/cli.js stack "D:/Astro/2024-01-15_M42"
-
-# then run linear pre-processing on the stacked result
-node bridge/cli.js linear integration1
-
-# then creative processing
-node bridge/cli.js creative integration1
+astropilot auto-open MyImage              # already stretched
+astropilot auto-open MyImage --linear     # still linear (needs stretching)
 ```
 
-**Run the old-school pipeline (individual steps):**
+**Step by step (more control):**
 
 ```bash
-node bridge/cli.js color-balance MyImage
-node bridge/cli.js background-fix MyImage
-node bridge/cli.js dehalo MyImage 150 0.15
-node bridge/cli.js noise-reduction MyImage
-node bridge/cli.js star-reduction MyImage
-node bridge/cli.js enhance MyImage
+astropilot scan "D:/Astro/2024-01-15_M42"       # see what you have
+astropilot validate "D:/Astro/2024-01-15_M42"   # check calibration compatibility
+astropilot stack "D:/Astro/2024-01-15_M42"       # calibrate, register, integrate
+astropilot linear integration1                    # gradient removal, color cal, NR
+astropilot classify integration1                  # identify target, pick profile
+astropilot creative integration1                  # adaptive nonlinear processing
+astropilot score integration1                     # quality scoring
+astropilot report integration1 ./output           # HTML + Markdown + JSON report
+astropilot annotate integration1 --author="Your Name"
+```
 
-# or all at once
-node bridge/cli.js pipeline MyImage
+**Individual processing steps:**
+
+```bash
+astropilot color-balance MyImage
+astropilot background-fix MyImage
+astropilot dehalo MyImage 150 0.15
+astropilot noise-reduction MyImage
+astropilot star-reduction MyImage
+astropilot enhance MyImage
+
+# or all at once with a fixed pipeline
+astropilot pipeline MyImage
 ```
 
 ## All CLI commands
+
+**End-to-end:**
+
+| Command | What it does |
+|---------|-------------|
+| `auto <dir>` | Full pipeline: scan, validate, stack, process, score, report |
+| `auto <dir> --force` | Proceed despite calibration validation errors |
+| `auto-open <id>` | Full pipeline on an already-open image |
+| `auto-open <id> --linear` | Same, but includes linear pre-processing |
 
 **Bridge:**
 

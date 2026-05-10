@@ -42,6 +42,12 @@ if (!command) {
    console.log('  run "<code>"                  Execute PJSR code');
    console.log('  process <name> <id> [json]    Run a PI process');
    console.log('');
+   console.log('End-to-end:');
+   console.log('  auto <directory>              Full pipeline: scan, validate, stack, process, score, report');
+   console.log('  auto <directory> --force      Proceed despite validation errors');
+   console.log('  auto <directory> --no-annotate  Skip watermark/info panel');
+   console.log('  auto-open <windowId>          Full pipeline on an already-open image');
+   console.log('');
    console.log('Pipeline:');
    console.log('  color-balance <id>            Neutralize background, equalize channels');
    console.log('  background-fix <id>           Remove per-channel floor offsets');
@@ -117,6 +123,376 @@ async function main() {
             } else {
                console.log('Watcher is not running');
             }
+            break;
+         }
+         case 'auto': {
+            if (!args[1]) { console.error('Usage: auto <directory> [--force] [--no-annotate] [--author="Name"]'); process.exit(1); }
+            const autoDir = args[1];
+            const autoForce = args.includes('--force');
+            const autoAnnotate = !args.includes('--no-annotate');
+            const autoSavedCfg = config.getConfig();
+
+            const autoOpts = {};
+            for (const arg of args.slice(2)) {
+               if (arg.startsWith('--author=')) autoOpts.author = arg.slice(9).replace(/^"|"$/g, '');
+               if (arg.startsWith('--location=')) autoOpts.location = arg.slice(11).replace(/^"|"$/g, '');
+               if (arg.startsWith('--bortle=')) autoOpts.bortle = arg.slice(9);
+               if (arg.startsWith('--output=')) autoOpts.outputDir = arg.slice(9).replace(/^"|"$/g, '');
+            }
+            if (!autoOpts.author && autoSavedCfg.author) autoOpts.author = autoSavedCfg.author;
+            if (!autoOpts.location && autoSavedCfg.location) autoOpts.location = autoSavedCfg.location;
+            if (!autoOpts.bortle && autoSavedCfg.bortle) autoOpts.bortle = String(autoSavedCfg.bortle);
+
+            console.log('AstroPilot — Full Pipeline');
+            console.log('=========================');
+            console.log('');
+
+            // --- Preflight: watcher check ---
+            console.log('[1/9] Checking watcher...');
+            if (!bridge.isWatcherRunning()) {
+               console.error('');
+               console.error('The PixInsight watcher is not running.');
+               console.error('Open PixInsight, go to Script > Run, and select bridge/pjsr/watcher.js');
+               console.error('Then run this command again.');
+               process.exit(1);
+            }
+            try {
+               await bridge.ping();
+               console.log('      Watcher is alive.');
+            } catch (e) {
+               console.error('      Watcher PID file exists but ping failed: ' + e.message);
+               console.error('      Restart the watcher in PixInsight and try again.');
+               process.exit(1);
+            }
+            console.log('');
+
+            // --- Step 1: Scan ---
+            console.log('[2/9] Scanning ' + autoDir + '...');
+            const autoSession = scanDirectory(autoDir);
+            console.log(autoSession.summary());
+            console.log('');
+
+            // --- Step 2: Validate ---
+            console.log('[3/9] Validating calibration frames...');
+            const autoValidation = validateSession(autoSession);
+            if (autoValidation.errors().length > 0) {
+               console.log(autoValidation.summary());
+               console.log('');
+               if (!autoForce) {
+                  console.error('Fix the errors above or re-run with --force to proceed anyway.');
+                  process.exit(1);
+               }
+               console.log('WARNING: Proceeding despite errors (--force).');
+               console.log('');
+            } else if (autoValidation.warnings().length > 0) {
+               for (const w of autoValidation.warnings()) {
+                  console.log('  [WARN] ' + w.message);
+               }
+               console.log('');
+            } else {
+               console.log('      All checks passed.');
+               console.log('');
+            }
+
+            // --- Step 3: Stack ---
+            console.log('[4/9] Stacking...');
+            const autoStackOpts = {
+               skipValidation: true,  // already validated above
+               forceStack: autoForce
+            };
+            if (autoOpts.outputDir) autoStackOpts.outputDir = autoOpts.outputDir;
+
+            const autoByFilter = autoSession.byFilter();
+            const autoFilterCount = Object.keys(autoByFilter).length;
+            let autoStackResult;
+            if (autoFilterCount > 1) {
+               console.log('      ' + autoFilterCount + ' filters — stacking separately...');
+               autoStackResult = await stackByFilter(autoSession, autoStackOpts);
+            } else {
+               autoStackResult = await stackSession(autoSession, autoStackOpts);
+            }
+
+            // Determine the result window ID
+            let autoWindowId;
+            if (autoStackResult.resultWindowId) {
+               autoWindowId = autoStackResult.resultWindowId;
+            } else if (autoStackResult.resultPath) {
+               // Single-filter result — the window should still be open
+               // The stacker leaves it open with the resultWindowId
+               autoWindowId = autoStackResult.resultWindowId;
+            } else {
+               // Multi-filter: find the first result
+               for (const [filter, r] of Object.entries(autoStackResult)) {
+                  if (r.resultWindowId) {
+                     autoWindowId = r.resultWindowId;
+                     console.log('      Using ' + filter + ' stack: ' + autoWindowId);
+                     break;
+                  }
+               }
+            }
+
+            if (!autoWindowId) {
+               // Fall back to listing open images
+               const openImages = await bridge.listOpenImages();
+               if (openImages.count > 0) {
+                  autoWindowId = openImages.windows[openImages.windows.length - 1].id;
+                  console.log('      Using most recent open image: ' + autoWindowId);
+               } else {
+                  console.error('      Stacking completed but no open image found.');
+                  process.exit(1);
+               }
+            }
+            console.log('      Stacked: ' + autoWindowId);
+            console.log('');
+
+            // --- Step 4: Linear pre-processing ---
+            console.log('[5/9] Linear pre-processing...');
+            const autoLinResult = await linearPreprocess(autoWindowId, {
+               extractStars: false,
+               gradientRemoval: true,
+               colorCalibration: true,
+               noiseReduction: true,
+               deconvolution: true
+            });
+            for (const step of autoLinResult.steps) {
+               const icon = step.method === 'skipped' ? '~' : step.method === 'failed' ? 'x' : '+';
+               console.log('      ' + icon + ' ' + step.step + ': ' + step.method);
+            }
+            console.log('');
+
+            // --- Step 5: Classify ---
+            console.log('[6/9] Classifying target...');
+            const autoClassResult = await classifyTarget(autoWindowId, { plateSolve: true });
+            console.log('      Target: ' + autoClassResult.target.name + ' (' + autoClassResult.target.type + ')');
+            console.log('      Profile: ' + autoClassResult.profile.name);
+            console.log('      Stretch: ' + autoClassResult.profile.stretch);
+            console.log('');
+
+            // --- Step 6: Creative processing ---
+            console.log('[7/9] Creative processing...');
+            const autoCreativeResult = await creativePipeline(autoWindowId, autoClassResult.profile, {});
+            console.log('      ' + autoCreativeResult.steps.length + ' steps completed.');
+            console.log('');
+
+            // --- Step 7: Score ---
+            console.log('[8/9] Scoring...');
+            const autoScoreResult = await scoreImage(autoWindowId, {
+               targetType: autoClassResult.target.type
+            });
+            console.log('');
+            console.log('      Overall: ' + autoScoreResult.overall + '/100');
+            console.log('      Gates: ' + (autoScoreResult.gatesPassed ? 'ALL PASSED' : 'SOME FAILED'));
+            console.log('');
+
+            // --- Step 8: Report + Annotate ---
+            console.log('[9/9] Output...');
+            const autoReportDir = autoOpts.outputDir || (autoSession.dir + '/AstroPilot_output');
+            const autoReportData = {
+               target: autoClassResult.target,
+               classification: autoClassResult,
+               scores: autoScoreResult.scores,
+               overall: autoScoreResult.overall,
+               gates: autoScoreResult.gates,
+               creativeSteps: autoCreativeResult.steps,
+               linearSteps: autoLinResult.steps
+            };
+            const autoReportPaths = writeReport(autoReportData, autoReportDir);
+            console.log('      Report: ' + autoReportPaths.html);
+
+            // Annotate
+            if (autoAnnotate && autoOpts.author) {
+               const autoAnnData = buildAnnotationData(autoClassResult, autoSession, autoOpts);
+               const autoAnnOpts = {};
+               if (autoAnnData.watermark) autoAnnOpts.watermark = autoAnnData.watermark;
+               if (autoAnnData.infoPanel) autoAnnOpts.infoPanel = autoAnnData.infoPanel;
+               if (autoAnnData.metadata) autoAnnOpts.metadata = autoAnnData.metadata;
+               const autoAnnResult = await annotateImage(autoWindowId, autoAnnOpts);
+               if (autoAnnResult.finalTargetId !== autoWindowId) {
+                  console.log('      Annotated: ' + autoAnnResult.finalTargetId);
+               } else {
+                  console.log('      Annotated.');
+               }
+            }
+
+            // --- Log session and save recipe ---
+            memory.logSession({
+               target: autoClassResult.target.name,
+               targetType: autoClassResult.target.type,
+               profileName: autoClassResult.profile.name,
+               stretch: autoClassResult.profile.stretch,
+               processing: autoClassResult.profile.processing,
+               score: autoScoreResult.overall,
+               gatesPassed: autoScoreResult.gatesPassed,
+               linearSteps: autoLinResult.steps,
+               creativeSteps: autoCreativeResult.steps
+            });
+
+            const autoRecipeName = (autoClassResult.target.name + '-' + new Date().toISOString().split('T')[0])
+               .replace(/\s+/g, '-').toLowerCase();
+            const autoRecipe = recipes.buildRecipeFromResults(
+               autoRecipeName,
+               autoClassResult,
+               autoLinResult,
+               autoCreativeResult,
+               autoScoreResult,
+               { author: autoOpts.author }
+            );
+            recipes.saveRecipe(autoRecipe);
+
+            // --- Done ---
+            console.log('');
+            console.log('========================================');
+            console.log('  Done!');
+            console.log('  Target:  ' + autoClassResult.target.name);
+            console.log('  Score:   ' + autoScoreResult.overall + '/100');
+            console.log('  Gates:   ' + (autoScoreResult.gatesPassed ? 'all passed' : 'some failed'));
+            console.log('  Report:  ' + autoReportPaths.html);
+            console.log('  Recipe:  ' + autoRecipeName);
+            console.log('  Image:   ' + autoWindowId);
+            console.log('========================================');
+            break;
+         }
+         case 'auto-open': {
+            if (!args[1]) { console.error('Usage: auto-open <windowId> [--linear] [--no-annotate] [--author="Name"]'); process.exit(1); }
+            const aoId = args[1];
+            const aoLinear = args.includes('--linear');
+            const aoAnnotate = !args.includes('--no-annotate');
+            const aoSavedCfg = config.getConfig();
+
+            const aoOpts = {};
+            for (const arg of args.slice(2)) {
+               if (arg.startsWith('--author=')) aoOpts.author = arg.slice(9).replace(/^"|"$/g, '');
+               if (arg.startsWith('--location=')) aoOpts.location = arg.slice(11).replace(/^"|"$/g, '');
+               if (arg.startsWith('--bortle=')) aoOpts.bortle = arg.slice(9);
+               if (arg.startsWith('--output=')) aoOpts.outputDir = arg.slice(9).replace(/^"|"$/g, '');
+            }
+            if (!aoOpts.author && aoSavedCfg.author) aoOpts.author = aoSavedCfg.author;
+            if (!aoOpts.location && aoSavedCfg.location) aoOpts.location = aoSavedCfg.location;
+            if (!aoOpts.bortle && aoSavedCfg.bortle) aoOpts.bortle = String(aoSavedCfg.bortle);
+
+            console.log('AstroPilot — Process Open Image');
+            console.log('===============================');
+            console.log('');
+
+            // Preflight
+            console.log('[1] Checking watcher...');
+            try {
+               await bridge.ping();
+               console.log('    Watcher is alive.');
+            } catch (e) {
+               console.error('    Watcher is not responding: ' + e.message);
+               console.error('    Start the watcher in PixInsight and try again.');
+               process.exit(1);
+            }
+            console.log('');
+
+            // Verify image exists
+            console.log('[2] Checking image...');
+            try {
+               const aoStats = await bridge.getImageStatistics(aoId);
+               console.log('    ' + aoStats.width + 'x' + aoStats.height + ', ' + aoStats.numberOfChannels + ' channels');
+            } catch (e) {
+               console.error('    Image not found: ' + aoId);
+               console.error('    Open images:');
+               try {
+                  const aoImages = await bridge.listOpenImages();
+                  for (const w of aoImages.windows) {
+                     console.error('      ' + w.id);
+                  }
+               } catch { /* ignore */ }
+               process.exit(1);
+            }
+            console.log('');
+
+            // Linear (optional)
+            let aoLinResult = { steps: [] };
+            if (aoLinear) {
+               console.log('[3] Linear pre-processing...');
+               aoLinResult = await linearPreprocess(aoId, {
+                  extractStars: false,
+                  gradientRemoval: true,
+                  colorCalibration: true,
+                  noiseReduction: true,
+                  deconvolution: true
+               });
+               for (const step of aoLinResult.steps) {
+                  const icon = step.method === 'skipped' ? '~' : step.method === 'failed' ? 'x' : '+';
+                  console.log('    ' + icon + ' ' + step.step + ': ' + step.method);
+               }
+               console.log('');
+            }
+
+            // Classify
+            console.log(aoLinear ? '[4] Classifying...' : '[3] Classifying...');
+            const aoClassResult = await classifyTarget(aoId, { plateSolve: true });
+            console.log('    Target: ' + aoClassResult.target.name + ' (' + aoClassResult.target.type + ')');
+            console.log('    Profile: ' + aoClassResult.profile.name);
+            console.log('');
+
+            // Creative
+            console.log(aoLinear ? '[5] Creative processing...' : '[4] Creative processing...');
+            const aoCreativeResult = await creativePipeline(aoId, aoClassResult.profile, {});
+            console.log('    ' + aoCreativeResult.steps.length + ' steps completed.');
+            console.log('');
+
+            // Score
+            console.log(aoLinear ? '[6] Scoring...' : '[5] Scoring...');
+            const aoScoreResult = await scoreImage(aoId, {
+               targetType: aoClassResult.target.type
+            });
+            console.log('');
+            console.log('    Overall: ' + aoScoreResult.overall + '/100');
+            console.log('    Gates: ' + (aoScoreResult.gatesPassed ? 'ALL PASSED' : 'SOME FAILED'));
+            console.log('');
+
+            // Report
+            console.log(aoLinear ? '[7] Output...' : '[6] Output...');
+            const aoReportDir = aoOpts.outputDir || '.';
+            const aoReportData = {
+               target: aoClassResult.target,
+               classification: aoClassResult,
+               scores: aoScoreResult.scores,
+               overall: aoScoreResult.overall,
+               gates: aoScoreResult.gates,
+               creativeSteps: aoCreativeResult.steps,
+               linearSteps: aoLinResult.steps
+            };
+            const aoReportPaths = writeReport(aoReportData, aoReportDir);
+            console.log('    Report: ' + aoReportPaths.html);
+
+            // Annotate
+            if (aoAnnotate && aoOpts.author) {
+               const aoAnnData = buildAnnotationData(aoClassResult, null, aoOpts);
+               const aoAnnOpts = {};
+               if (aoAnnData.watermark) aoAnnOpts.watermark = aoAnnData.watermark;
+               if (aoAnnData.infoPanel) aoAnnOpts.infoPanel = aoAnnData.infoPanel;
+               if (aoAnnData.metadata) aoAnnOpts.metadata = aoAnnData.metadata;
+               await annotateImage(aoId, aoAnnOpts);
+               console.log('    Annotated.');
+            }
+
+            // Log session
+            memory.logSession({
+               target: aoClassResult.target.name,
+               targetType: aoClassResult.target.type,
+               profileName: aoClassResult.profile.name,
+               stretch: aoClassResult.profile.stretch,
+               processing: aoClassResult.profile.processing,
+               score: aoScoreResult.overall,
+               gatesPassed: aoScoreResult.gatesPassed,
+               linearSteps: aoLinResult.steps,
+               creativeSteps: aoCreativeResult.steps
+            });
+
+            console.log('');
+            console.log('========================================');
+            console.log('  Done!');
+            console.log('  Target:  ' + aoClassResult.target.name);
+            console.log('  Score:   ' + aoScoreResult.overall + '/100');
+            console.log('  Gates:   ' + (aoScoreResult.gatesPassed ? 'all passed' : 'some failed'));
+            console.log('  Report:  ' + aoReportPaths.html);
+            console.log('  Image:   ' + aoId);
+            console.log('========================================');
             break;
          }
          case 'ping': {
