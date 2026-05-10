@@ -14,6 +14,9 @@
 //
 // PJSR (ECMAScript 5) — no let/const/arrow/template literals.
 
+#include <pjsr/DataType.jsh>
+#include <pjsr/UndoFlag.jsh>
+
 // ---- Configuration ----
 
 var BRIDGE_BASE = File.homeDirectory + "/.astropilot/bridge";
@@ -33,19 +36,8 @@ function ensureDirectory(path) {
 // ---- File Helpers ----
 
 function readTextFile(filePath) {
-   var p = String(filePath);
-   var f = new File;
-   f.openForReading(p);
-   var size = f.size;
-   var text = "";
-   for (var i = 0; i < size; i++) {
-      var byte = f.readInt8();
-      if (byte > 0) {
-         text += String.fromCharCode(byte);
-      }
-   }
-   f.close();
-   return text;
+   var lines = File.readLines(String(filePath));
+   return lines.join("\n");
 }
 
 function writeTextFile(path, text) {
