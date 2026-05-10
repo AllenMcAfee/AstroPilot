@@ -512,6 +512,447 @@ handlers.enhance = function(params) {
    };
 };
 
+// ---- File & Stacking Command Handlers ----
+
+handlers.open_image = function(params) {
+   var filePath = params.filePath;
+   if (!filePath) throw new Error("Missing 'filePath' parameter");
+
+   var w = ImageWindow.open(filePath);
+   if (!w || w.length === 0) throw new Error("Failed to open: " + filePath);
+
+   var opened = [];
+   for (var i = 0; i < w.length; i++) {
+      w[i].show();
+      opened.push(w[i].mainView.id);
+   }
+
+   return { opened: opened };
+};
+
+handlers.save_image = function(params) {
+   var targetId = params.target || params.targetId;
+   var filePath = params.filePath;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+   if (!filePath) throw new Error("Missing 'filePath' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var overwrite = params.overwrite !== false;
+   w.saveAs(filePath, false, false, !overwrite, false);
+
+   return { target: targetId, filePath: filePath };
+};
+
+handlers.close_image = function(params) {
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   w.forceClose();
+   return { closed: targetId };
+};
+
+handlers.calibrate = function(params) {
+   // ImageCalibration: apply master dark, flat, bias to a list of light frames.
+   // Writes calibrated frames to outputDir.
+   var lights = params.lights;
+   if (!lights || lights.length === 0) throw new Error("Missing 'lights' parameter");
+   var outputDir = params.outputDir;
+   if (!outputDir) throw new Error("Missing 'outputDir' parameter");
+
+   var IC = new ImageCalibration;
+
+   // Build target frames array
+   var targetFrames = [];
+   for (var i = 0; i < lights.length; i++) {
+      targetFrames.push([true, lights[i]]);
+   }
+   IC.targetFrames = targetFrames;
+
+   // Master dark
+   if (params.masterDark) {
+      IC.enableDarkFrameCalibration = true;
+      IC.masterDarkPath = params.masterDark;
+      IC.calibrateDark = false;
+      IC.darkOptimizationWindow = params.darkOptimizationWindow || 1024;
+      IC.darkOptimizationLow = 3.0;
+      IC.darkOptimizationThreshold = 0.0;
+   } else {
+      IC.enableDarkFrameCalibration = false;
+   }
+
+   // Master flat
+   if (params.masterFlat) {
+      IC.enableFlatFrameCalibration = true;
+      IC.masterFlatPath = params.masterFlat;
+      IC.calibrateFlat = false;
+   } else {
+      IC.enableFlatFrameCalibration = false;
+   }
+
+   // Master bias
+   if (params.masterBias) {
+      IC.enableBiasFrameCalibration = true;
+      IC.masterBiasPath = params.masterBias;
+   } else {
+      IC.enableBiasFrameCalibration = false;
+   }
+
+   IC.outputDirectory = outputDir;
+   IC.outputPrefix = params.outputPrefix || "";
+   IC.outputPostfix = params.outputPostfix || "_c";
+   IC.outputSampleFormat = 1; // 32-bit float
+   IC.overwriteExistingFiles = true;
+   IC.onError = 0; // continue
+
+   IC.executeGlobal();
+
+   return {
+      calibrated: lights.length,
+      outputDir: outputDir
+   };
+};
+
+handlers.measure_subframes = function(params) {
+   // SubframeSelector: measure quality metrics for each frame.
+   // Returns FWHM, eccentricity, SNR, weight for each.
+   var files = params.files;
+   if (!files || files.length === 0) throw new Error("Missing 'files' parameter");
+
+   var SS = new SubframeSelector;
+
+   var subframes = [];
+   for (var i = 0; i < files.length; i++) {
+      subframes.push([true, files[i]]);
+   }
+   SS.subframes = subframes;
+
+   // Measurement mode only (don't output files)
+   SS.routine = 0; // MeasureSubframes
+   SS.fileCache = true;
+
+   // Star detection
+   SS.structureLayers = params.structureLayers || 5;
+   SS.minStructureSize = 0;
+   SS.sensitivity = params.sensitivity || 0.1;
+   SS.peakResponse = 0.8;
+
+   // Weighting formula — PSF Signal Weight is the gold standard
+   SS.selectorExpression = params.selectorExpression || "";
+   SS.weightingExpression = params.weightingExpression || "PSFSignalWeight";
+
+   SS.executeGlobal();
+
+   // Read measurements from the process
+   var measurements = [];
+   if (SS.measurements) {
+      for (var i = 0; i < SS.measurements.length; i++) {
+         var m = SS.measurements[i];
+         measurements.push({
+            index: m[0],
+            enabled: m[1],
+            locked: m[2],
+            filePath: m[3],
+            fwhm: m[4],
+            eccentricity: m[5],
+            snrWeight: m[6],
+            median: m[7],
+            medianMeanDev: m[8],
+            noise: m[9],
+            noiseRatio: m[10],
+            stars: m[11],
+            starResidual: m[12],
+            fwhmMeanDev: m[13],
+            eccentricityMeanDev: m[14],
+            starResidualMeanDev: m[15],
+            weight: m[16]
+         });
+      }
+   }
+
+   return {
+      count: measurements.length,
+      measurements: measurements
+   };
+};
+
+handlers.register_frames = function(params) {
+   // StarAlignment: register/align frames to a reference.
+   var files = params.files;
+   if (!files || files.length === 0) throw new Error("Missing 'files' parameter");
+   var outputDir = params.outputDir;
+   if (!outputDir) throw new Error("Missing 'outputDir' parameter");
+
+   var SA = new StarAlignment;
+
+   // Reference image: first frame or user-specified
+   SA.referenceImage = params.referenceImage || files[0];
+   SA.referenceIsFile = true;
+
+   var targets = [];
+   for (var i = 0; i < files.length; i++) {
+      targets.push([true, true, files[i]]);
+   }
+   SA.targets = targets;
+
+   SA.outputDirectory = outputDir;
+   SA.outputPrefix = params.outputPrefix || "";
+   SA.outputPostfix = params.outputPostfix || "_r";
+   SA.overwriteExistingFiles = true;
+   SA.onError = 0; // continue
+
+   // Detection parameters
+   SA.structureLayers = params.structureLayers || 5;
+   SA.sensitivity = params.sensitivity || 0.5;
+   SA.maxStarDistortion = params.maxStarDistortion || 0.6;
+   SA.noGUIMessages = true;
+
+   SA.executeGlobal();
+
+   return {
+      registered: files.length,
+      referenceImage: SA.referenceImage,
+      outputDir: outputDir
+   };
+};
+
+handlers.integrate = function(params) {
+   // ImageIntegration: stack registered frames with pixel rejection.
+   var files = params.files;
+   if (!files || files.length === 0) throw new Error("Missing 'files' parameter");
+
+   var II = new ImageIntegration;
+
+   var images = [];
+   for (var i = 0; i < files.length; i++) {
+      // [enabled, path, drizzlePath, weight]
+      var weight = 1.0;
+      if (params.weights && params.weights[i] !== undefined) {
+         weight = params.weights[i];
+      }
+      images.push([true, files[i], "", weight]);
+   }
+   II.images = images;
+
+   // Combination
+   II.combination = 0; // Average
+   II.normalization = 1; // Additive with scaling
+
+   // Pixel rejection
+   var frameCount = files.length;
+   if (frameCount < 8) {
+      // Few frames: Winsorized Sigma Clipping
+      II.rejection = 4; // WinsorizedSigmaClipping
+      II.wscSigmaLow = params.sigmaLow || 3.0;
+      II.wscSigmaHigh = params.sigmaHigh || 2.5;
+   } else if (frameCount < 25) {
+      // Medium: Linear Fit Clipping
+      II.rejection = 3; // LinearFitClipping
+      II.linearFitLow = params.sigmaLow || 5.0;
+      II.linearFitHigh = params.sigmaHigh || 3.0;
+   } else {
+      // Many frames: ESD (Generalized ESD)
+      II.rejection = 6; // GeneralizedExtremeStudentizedDeviate
+      II.esdOutliersFraction = params.esdOutliersFraction || 0.3;
+      II.esdSignificance = params.esdSignificance || 0.05;
+   }
+
+   // Weights
+   if (params.weightMode === "PSFSignalWeight" || params.weights) {
+      II.weightMode = 4; // PSFSignalWeight
+   } else {
+      II.weightMode = 1; // NoiseEvaluation
+   }
+
+   II.rangeClipLow = true;
+   II.rangeLow = 0.0;
+   II.rangeClipHigh = params.rangeClipHigh !== false;
+   II.rangeHigh = params.rangeHigh || 0.98;
+
+   II.generate64BitResult = false;
+   II.generateRejectionMaps = false;
+   II.generateIntegratedImage = true;
+   II.closePreviousImages = true;
+   II.autoMemory = true;
+   II.noGUIMessages = true;
+
+   II.executeGlobal();
+
+   // The result is an open window named "integration"
+   var resultId = null;
+   var windows = ImageWindow.windows;
+   for (var i = 0; i < windows.length; i++) {
+      var wId = windows[i].mainView.id;
+      if (wId.toLowerCase().indexOf("integration") !== -1) {
+         resultId = wId;
+      }
+   }
+
+   return {
+      integrated: files.length,
+      rejectionAlgorithm: frameCount < 8 ? "WinsorizedSigmaClipping" :
+                          frameCount < 25 ? "LinearFitClipping" : "GeneralizedESD",
+      resultWindowId: resultId
+   };
+};
+
+handlers.create_master_calibration = function(params) {
+   // ImageIntegration configured for calibration masters (darks, flats, bias).
+   // Uses appropriate settings for each type.
+   var files = params.files;
+   var frameType = params.frameType; // "dark", "flat", "bias"
+   if (!files || files.length === 0) throw new Error("Missing 'files' parameter");
+   if (!frameType) throw new Error("Missing 'frameType' parameter");
+
+   var II = new ImageIntegration;
+
+   var images = [];
+   for (var i = 0; i < files.length; i++) {
+      images.push([true, files[i], "", 1.0]);
+   }
+   II.images = images;
+
+   II.generateIntegratedImage = true;
+   II.generate64BitResult = false;
+   II.generateRejectionMaps = false;
+   II.closePreviousImages = true;
+   II.autoMemory = true;
+   II.noGUIMessages = true;
+
+   if (frameType === "bias") {
+      II.combination = 0; // Average
+      II.normalization = 0; // NoNormalization
+      II.rejection = 4; // WinsorizedSigmaClipping
+      II.wscSigmaLow = 4.0;
+      II.wscSigmaHigh = 3.0;
+   } else if (frameType === "dark") {
+      II.combination = 0; // Average
+      II.normalization = 0; // NoNormalization
+      II.rejection = 4; // WinsorizedSigmaClipping
+      II.wscSigmaLow = 4.0;
+      II.wscSigmaHigh = 3.0;
+   } else if (frameType === "flat") {
+      II.combination = 0; // Average
+      II.normalization = 2; // Multiplicative
+      II.rejection = 4; // WinsorizedSigmaClipping
+      II.wscSigmaLow = 4.0;
+      II.wscSigmaHigh = 3.0;
+   }
+
+   II.executeGlobal();
+
+   // Find the result window
+   var resultId = null;
+   var windows = ImageWindow.windows;
+   for (var i = 0; i < windows.length; i++) {
+      var wId = windows[i].mainView.id;
+      if (wId.toLowerCase().indexOf("integration") !== -1) {
+         resultId = wId;
+      }
+   }
+
+   return {
+      frameType: frameType,
+      frameCount: files.length,
+      resultWindowId: resultId
+   };
+};
+
+handlers.crop_stacking_edges = function(params) {
+   // Auto-crop black edges left by registration/stacking.
+   // Scans inward from each edge to find where real data starts.
+   var targetId = params.target || params.targetId;
+   if (!targetId) throw new Error("Missing 'target' parameter");
+
+   var w = ImageWindow.windowById(targetId);
+   if (w.isNull) throw new Error("Window '" + targetId + "' not found");
+
+   var img = w.mainView.image;
+   var threshold = params.threshold || 0.001;
+
+   // Sample along edges to find crop boundaries
+   var left = 0, right = img.width - 1, top = 0, bottom = img.height - 1;
+   var step = Math.max(1, Math.floor(img.height / 50));
+
+   // Scan left edge
+   for (var x = 0; x < img.width / 4; x++) {
+      var allBlack = true;
+      for (var y = 0; y < img.height; y += step) {
+         for (var c = 0; c < img.numberOfChannels; c++) {
+            if (img.sample(x, y, c) > threshold) { allBlack = false; break; }
+         }
+         if (!allBlack) break;
+      }
+      if (!allBlack) { left = x; break; }
+   }
+
+   // Scan right edge
+   for (var x = img.width - 1; x > img.width * 3 / 4; x--) {
+      var allBlack = true;
+      for (var y = 0; y < img.height; y += step) {
+         for (var c = 0; c < img.numberOfChannels; c++) {
+            if (img.sample(x, y, c) > threshold) { allBlack = false; break; }
+         }
+         if (!allBlack) break;
+      }
+      if (!allBlack) { right = x; break; }
+   }
+
+   // Scan top edge
+   step = Math.max(1, Math.floor(img.width / 50));
+   for (var y = 0; y < img.height / 4; y++) {
+      var allBlack = true;
+      for (var x = 0; x < img.width; x += step) {
+         for (var c = 0; c < img.numberOfChannels; c++) {
+            if (img.sample(x, y, c) > threshold) { allBlack = false; break; }
+         }
+         if (!allBlack) break;
+      }
+      if (!allBlack) { top = y; break; }
+   }
+
+   // Scan bottom edge
+   for (var y = img.height - 1; y > img.height * 3 / 4; y--) {
+      var allBlack = true;
+      for (var x = 0; x < img.width; x += step) {
+         for (var c = 0; c < img.numberOfChannels; c++) {
+            if (img.sample(x, y, c) > threshold) { allBlack = false; break; }
+         }
+         if (!allBlack) break;
+      }
+      if (!allBlack) { bottom = y; break; }
+   }
+
+   var cropW = right - left + 1;
+   var cropH = bottom - top + 1;
+
+   if (cropW < img.width || cropH < img.height) {
+      var DC = new DynamicCrop;
+      DC.centerX = (left + right) / 2 / img.width;
+      DC.centerY = (top + bottom) / 2 / img.height;
+      DC.width = cropW / img.width;
+      DC.height = cropH / img.height;
+      DC.scaleX = 1.0;
+      DC.scaleY = 1.0;
+      DC.angle = 0;
+      DC.executeOn(w.mainView);
+
+      return {
+         target: targetId,
+         cropped: true,
+         original: { width: img.width, height: img.height },
+         cropRect: { left: left, top: top, right: right, bottom: bottom },
+         newSize: { width: cropW, height: cropH }
+      };
+   }
+
+   return { target: targetId, cropped: false, reason: "No stacking edges detected" };
+};
+
 handlers.run_script = function(params) {
    var code = params.code;
    if (!code) throw new Error("Missing 'code' parameter");

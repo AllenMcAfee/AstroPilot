@@ -192,6 +192,20 @@ async function enhance(target, options) {
    return sendCommand('enhance', params);
 }
 
+// ---- File Commands ----
+
+async function openImage(filePath) {
+   return sendCommand('open_image', { filePath: filePath });
+}
+
+async function saveImage(target, filePath) {
+   return sendCommand('save_image', { target: target, filePath: filePath });
+}
+
+async function closeImage(target) {
+   return sendCommand('close_image', { target: target });
+}
+
 async function shutdown() {
    ensureDir(COMMANDS_DIR);
    fs.writeFileSync(path.join(COMMANDS_DIR, 'shutdown'), '');
@@ -210,6 +224,9 @@ module.exports = {
    noiseReduction,
    starReduction,
    enhance,
+   openImage,
+   saveImage,
+   closeImage,
    shutdown,
    isWatcherRunning,
    getWatcherInfo,

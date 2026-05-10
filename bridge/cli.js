@@ -12,6 +12,7 @@
 
 const bridge = require('./client');
 const { scanDirectory } = require('../lib/classifier');
+const { stackSession, stackByFilter } = require('../lib/stacker');
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -39,6 +40,7 @@ if (!command) {
    console.log('Pre-processing:');
    console.log('  scan <directory>              Scan and classify FITS/XISF files');
    console.log('  scan <directory> --json       Same, but output as JSON');
+   console.log('  stack <directory> [outDir]    Calibrate, register, and stack');
    console.log('');
    console.log('  shutdown                      Stop the watcher');
    process.exit(0);
@@ -201,6 +203,36 @@ async function main() {
                console.log(JSON.stringify(session.toJSON(), null, 2));
             } else {
                console.log(session.summary());
+            }
+            break;
+         }
+         case 'stack': {
+            if (!args[1]) { console.error('Usage: stack <directory> [outputDir]'); process.exit(1); }
+            const stackSession_ = scanDirectory(args[1]);
+            console.log(stackSession_.summary());
+            console.log('');
+
+            const stackOpts = {};
+            if (args[2] && !args[2].startsWith('--')) stackOpts.outputDir = args[2];
+
+            const byFilter = stackSession_.byFilter();
+            const filterCount = Object.keys(byFilter).length;
+
+            let result;
+            if (filterCount > 1) {
+               console.log('Stacking ' + filterCount + ' filters separately...\n');
+               result = await stackByFilter(stackSession_, stackOpts);
+            } else {
+               result = await stackSession(stackSession_, stackOpts);
+            }
+
+            console.log('\nStacking complete!');
+            if (result.resultPath) {
+               console.log('Result: ' + result.resultPath);
+            } else {
+               for (const [filter, r] of Object.entries(result)) {
+                  console.log('  ' + filter + ': ' + r.resultPath);
+               }
             }
             break;
          }
