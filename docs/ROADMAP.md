@@ -279,18 +279,20 @@ Cross-platform support, npm packaging, configuration management, and equipment p
 
 ## Phase 9 — Community & Learning
 
-**Status: Planned**
+**Status: Complete**
 
-**Goal: Learn from the community, share results, improve over time**
+Learning from every session, sharing recipes, and tracking growth over time.
 
-- [ ] Processing profile sharing (export/import processing recipes)
-- [ ] Memory system: learn from each processing session
-  - What worked for this target type
-  - Parameter ranges that produced good scores
-  - Promote learnings across target types
-- [ ] AstroBin integration (upload final image + description)
-- [ ] Community recipe catalog (curated processing profiles)
-- [ ] Skill progression tracking for the user
+- [x] Processing recipe sharing (export/import complete pipeline snapshots)
+- [x] Memory system: learn from each processing session
+  - What worked for this target type (stretch, parameters, scores)
+  - Parameter ranges that consistently produce good results
+  - Cross-type aggregate insights (global trends)
+  - Automatic suggestions based on historical data
+- [x] AstroBin integration (description generation + image upload via API v2)
+- [x] Recipe catalog (save, list, show, export, import, find by target type)
+- [x] Skill progression tracking (level, milestones, improvement over time)
+- [x] Session history with statistics (scores, gate pass rates, target diversity)
 
 ---
 

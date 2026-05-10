@@ -23,6 +23,9 @@ const { annotateImage, buildAnnotationData } = require('../lib/annotate');
 const { getPlatformInfo } = require('../lib/platform');
 const config = require('../lib/config');
 const equipment = require('../lib/equipment');
+const recipes = require('../lib/recipes');
+const memory = require('../lib/memory');
+const astrobin = require('../lib/astrobin');
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -72,6 +75,23 @@ if (!command) {
    console.log('  equipment show <name>         Show a profile');
    console.log('  equipment create <name>       Create a new profile (JSON on stdin)');
    console.log('  equipment delete <name>       Delete a profile');
+   console.log('');
+   console.log('Recipes:');
+   console.log('  recipe list                   List saved processing recipes');
+   console.log('  recipe show <name>            Show a recipe');
+   console.log('  recipe delete <name>          Delete a recipe');
+   console.log('  recipe export <name> <file>   Export a recipe to a file');
+   console.log('  recipe import <file>          Import a recipe from a file');
+   console.log('');
+   console.log('Learning:');
+   console.log('  history                       Show processing session history');
+   console.log('  learnings [targetType]        Show what AstroPilot has learned');
+   console.log('  suggest <targetType>          Get parameter suggestions from past sessions');
+   console.log('  progress                      Show skill progression and milestones');
+   console.log('');
+   console.log('AstroBin:');
+   console.log('  astrobin-desc <windowId>      Generate AstroBin description');
+   console.log('  astrobin-upload <file>        Upload image to AstroBin');
    console.log('');
    console.log('  shutdown                      Stop the watcher');
    process.exit(0);
@@ -540,6 +560,237 @@ async function main() {
                console.error('Unknown equipment command: ' + eqCmd);
                console.error('Try: list, show, create, delete');
                process.exit(1);
+            }
+            break;
+         }
+         case 'recipe': {
+            const recCmd = args[1];
+            if (!recCmd || recCmd === 'list') {
+               const recs = recipes.listRecipes();
+               if (recs.length === 0) {
+                  console.log('No recipes saved yet.');
+                  console.log('Recipes are created automatically when you run the creative pipeline.');
+               } else {
+                  console.log(recs.length + ' recipe(s):');
+                  for (const r of recs) {
+                     const score = r.score ? ' (score: ' + r.score.overall + ')' : '';
+                     const type = r.targetType ? ' [' + r.targetType + ']' : '';
+                     console.log('  ' + r.name + type + score);
+                  }
+               }
+            } else if (recCmd === 'show') {
+               if (!args[2]) { console.error('Usage: recipe show <name>'); process.exit(1); }
+               const recipe = recipes.loadRecipe(args[2]);
+               recipes.displayRecipe(recipe);
+            } else if (recCmd === 'delete') {
+               if (!args[2]) { console.error('Usage: recipe delete <name>'); process.exit(1); }
+               if (recipes.deleteRecipe(args[2])) {
+                  console.log('Deleted: ' + args[2]);
+               } else {
+                  console.log('Recipe not found: ' + args[2]);
+               }
+            } else if (recCmd === 'export') {
+               if (!args[2] || !args[3]) { console.error('Usage: recipe export <name> <outputFile>'); process.exit(1); }
+               const exported = recipes.exportRecipe(args[2], args[3]);
+               if (exported) {
+                  console.log('Exported to: ' + exported);
+               } else {
+                  console.log('Recipe not found: ' + args[2]);
+               }
+            } else if (recCmd === 'import') {
+               if (!args[2]) { console.error('Usage: recipe import <file>'); process.exit(1); }
+               const imported = recipes.importRecipe(args[2]);
+               if (imported) {
+                  console.log('Imported: ' + imported.recipe.name);
+                  console.log('Saved to: ' + imported.path);
+               } else {
+                  console.log('Could not import: ' + args[2]);
+               }
+            } else {
+               console.error('Unknown recipe command: ' + recCmd);
+               console.error('Try: list, show, delete, export, import');
+               process.exit(1);
+            }
+            break;
+         }
+         case 'history': {
+            const stats = memory.getSessionStats();
+            if (!stats) {
+               console.log('No processing sessions recorded yet.');
+               console.log('Sessions are logged automatically when you run the pipeline.');
+            } else {
+               console.log('Processing History');
+               console.log('==================');
+               console.log('Total sessions:  ' + stats.totalSessions);
+               console.log('Scored sessions: ' + stats.scoredSessions);
+               if (stats.averageScore) console.log('Average score:   ' + stats.averageScore);
+               if (stats.bestScore) console.log('Best score:      ' + stats.bestScore);
+               if (stats.gatePassRate !== null) console.log('Gate pass rate:  ' + stats.gatePassRate + '%');
+               console.log('');
+               console.log('First session:   ' + stats.firstSession);
+               console.log('Last session:    ' + stats.lastSession);
+               console.log('');
+               if (Object.keys(stats.targetTypes).length > 0) {
+                  console.log('Target types:');
+                  for (const [type, count] of Object.entries(stats.targetTypes)) {
+                     console.log('  ' + type + ': ' + count + ' session(s)');
+                  }
+               }
+            }
+            break;
+         }
+         case 'learnings': {
+            const learningType = args[1];
+            if (learningType) {
+               const typeStats = memory.getTargetTypeStats(learningType);
+               if (!typeStats) {
+                  console.log('No sessions recorded for type: ' + learningType);
+               } else {
+                  console.log('Learnings for ' + learningType);
+                  console.log('Sessions: ' + typeStats.sessionCount);
+                  if (typeStats.averageScore) console.log('Average score: ' + typeStats.averageScore);
+                  if (typeStats.bestScore) console.log('Best score: ' + typeStats.bestScore);
+                  if (typeStats.scoreTrend !== 'insufficient_data') console.log('Trend: ' + typeStats.scoreTrend);
+                  if (Object.keys(typeStats.targets).length > 0) {
+                     console.log('');
+                     console.log('Targets processed:');
+                     for (const [name, count] of Object.entries(typeStats.targets)) {
+                        console.log('  ' + name + ': ' + count + 'x');
+                     }
+                  }
+               }
+            } else {
+               const learnings = memory.loadLearnings();
+               if (Object.keys(learnings).length === 0) {
+                  console.log('No learnings yet. Process some images first.');
+               } else {
+                  console.log('AstroPilot Learnings');
+                  console.log('====================');
+                  for (const [type, learning] of Object.entries(learnings)) {
+                     if (type === '_global') continue;
+                     console.log('');
+                     console.log(type + ' (' + learning.sessionCount + ' sessions)');
+                     if (learning.scores) {
+                        console.log('  Scores: avg=' + learning.scores.average +
+                           ' best=' + learning.scores.best +
+                           ' trend=' + learning.scores.trend);
+                     }
+                     if (learning.bestStretch) {
+                        console.log('  Best stretch: ' + learning.bestStretch.method +
+                           ' (avg score ' + learning.bestStretch.averageScore + ')');
+                     }
+                     if (learning.gatePassRate !== undefined) {
+                        console.log('  Gate pass rate: ' + learning.gatePassRate + '%');
+                     }
+                  }
+                  if (learnings._global && learnings._global.totalSessions) {
+                     console.log('');
+                     console.log('Global: ' + learnings._global.totalSessions + ' sessions, avg score ' +
+                        learnings._global.averageScore + ', trend ' + learnings._global.trend);
+                  }
+               }
+            }
+            break;
+         }
+         case 'suggest': {
+            if (!args[1]) { console.error('Usage: suggest <targetType>'); process.exit(1); }
+            const { getProfile } = require('../lib/profiles');
+            const currentProfile = getProfile(args[1]);
+            const suggestions = memory.suggestAdjustments(args[1], currentProfile);
+            if (!suggestions) {
+               console.log('Not enough data yet for suggestions on ' + args[1] + '.');
+               console.log('Process more images of this type and AstroPilot will learn what works.');
+            } else {
+               console.log('Suggestions for ' + suggestions.targetType);
+               console.log('Based on ' + suggestions.basedOn);
+               if (suggestions.bestScore) console.log('Best score achieved: ' + suggestions.bestScore);
+               console.log('');
+               for (const s of suggestions.suggestions) {
+                  console.log('  ' + s.parameter + ': ' + s.current + ' -> ' + s.suggested);
+                  console.log('    ' + s.reason);
+               }
+            }
+            break;
+         }
+         case 'progress': {
+            const progression = memory.getSkillProgression();
+            if (!progression) {
+               console.log('Need at least 2 scored sessions to track progress.');
+            } else {
+               console.log('Skill Progression');
+               console.log('=================');
+               console.log('Level: ' + progression.level);
+               console.log('Sessions: ' + progression.totalSessions);
+               console.log('Current average: ' + progression.currentAverage + '/100');
+               if (progression.improvement !== 0) {
+                  const dir = progression.improvement > 0 ? '+' : '';
+                  console.log('Improvement: ' + dir + progression.improvement + ' points since first sessions');
+               }
+               console.log('');
+
+               if (progression.windows.length > 1) {
+                  console.log('Progress over time:');
+                  for (const w of progression.windows) {
+                     const bar = '#'.repeat(Math.round(w.average / 5));
+                     console.log('  ' + w.from.split('T')[0] + '  avg=' + w.average + '  best=' + w.best + '  ' + bar);
+                  }
+                  console.log('');
+               }
+
+               if (progression.milestones.length > 0) {
+                  console.log('Milestones:');
+                  for (const m of progression.milestones) {
+                     const when = typeof m.achieved === 'string' ? m.achieved.split('T')[0] : 'yes';
+                     console.log('  ' + m.name + ' (' + when + ')');
+                  }
+               }
+            }
+            break;
+         }
+         case 'astrobin-desc': {
+            if (!args[1]) { console.error('Usage: astrobin-desc <windowId>'); process.exit(1); }
+            console.log('Classifying target...');
+            const abClassInfo = await classifyTarget(args[1], { plateSolve: false });
+            const savedCfg = config.getConfig();
+            const desc = astrobin.buildDescription(abClassInfo, null, null, {
+               location: savedCfg.location,
+               bortle: savedCfg.bortle
+            });
+            console.log('');
+            console.log(desc);
+            break;
+         }
+         case 'astrobin-upload': {
+            if (!args[1]) { console.error('Usage: astrobin-upload <imagePath> [--title="Title"] [--wip]'); process.exit(1); }
+            const uploadPath = args[1];
+            const uploadOpts = { isWip: true };
+            for (const arg of args.slice(2)) {
+               if (arg.startsWith('--title=')) uploadOpts.title = arg.slice(8).replace(/^"|"$/g, '');
+               if (arg === '--publish') uploadOpts.isWip = false;
+            }
+
+            // Generate description if we can classify
+            let uploadDesc = '';
+            try {
+               // Try to classify from any open image to get target info
+               const images = await bridge.listOpenImages();
+               if (images.count > 0) {
+                  const abClass = await classifyTarget(images.windows[0].id, { plateSolve: false });
+                  uploadDesc = astrobin.buildDescription(abClass, null, null, {});
+               }
+            } catch {
+               // No running PI instance, upload without description
+            }
+
+            console.log('Uploading to AstroBin...');
+            const uploadResult = await astrobin.uploadToAstroBin(uploadPath, uploadDesc, uploadOpts);
+            if (uploadResult.success) {
+               console.log('Uploaded successfully!');
+               console.log('URL: ' + uploadResult.url);
+               if (uploadResult.isWip) console.log('(Uploaded as work-in-progress. Use --publish to publish directly.)');
+            } else {
+               console.error('Upload failed: ' + uploadResult.error);
+               if (uploadResult.detail) console.error('Detail: ' + uploadResult.detail);
             }
             break;
          }

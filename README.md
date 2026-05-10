@@ -196,6 +196,21 @@ node bridge/cli.js pipeline MyImage
 | `equipment create <name> [json]` | Create an equipment profile |
 | `equipment delete <name>` | Delete an equipment profile |
 
+**Recipes & Learning:**
+
+| Command | What it does |
+|---------|-------------|
+| `recipe list` | List saved processing recipes |
+| `recipe show <name>` | Show a recipe's settings and score |
+| `recipe export <name> <file>` | Export a recipe for sharing |
+| `recipe import <file>` | Import a recipe from someone else |
+| `history` | Show processing session history |
+| `learnings [type]` | Show what AstroPilot has learned per target type |
+| `suggest <type>` | Get parameter suggestions based on past sessions |
+| `progress` | Show skill level, milestones, and improvement |
+| `astrobin-desc <id>` | Generate AstroBin-ready image description |
+| `astrobin-upload <file>` | Upload an image to AstroBin |
+
 ## Using the client library
 
 If you want to build on top of AstroPilot, the client is a CommonJS module:
@@ -246,6 +261,9 @@ lib/
   platform.js        Cross-platform support (Windows, macOS, Linux)
   config.js          Configuration management and setup wizard
   equipment.js       Equipment profile management
+  recipes.js         Processing recipe export/import/sharing
+  memory.js          Session logging, learning engine, skill progression
+  astrobin.js        AstroBin description generation and uploads
 
 scripts/             Original standalone PJSR scripts
 docs/ROADMAP.md      Full project roadmap
@@ -266,7 +284,7 @@ AstroPilot works with or without these — it adapts automatically:
 
 ## What's next
 
-Phase 9 covers community features: processing recipe sharing, a learning system that improves from each session, AstroBin integration, and skill progression tracking. See `docs/ROADMAP.md` for the full plan.
+All nine development phases are complete. Future work will focus on refining the learning engine as more sessions accumulate, expanding the target catalog, and community recipe contributions. See `docs/ROADMAP.md` for the full history.
 
 ## License
 
