@@ -564,15 +564,16 @@ handlers.calibrate = function(params) {
    // Build target frames array
    var targetFrames = [];
    for (var i = 0; i < lights.length; i++) {
-      targetFrames.push([true, lights[i]]);
+      targetFrames.push([true, String(lights[i])]);
    }
    IC.targetFrames = targetFrames;
 
    // Master dark
    if (params.masterDark) {
       IC.enableDarkFrameCalibration = true;
-      IC.masterDarkPath = params.masterDark;
+      IC.masterDarkPath = String(params.masterDark);
       IC.calibrateDark = false;
+      IC.optimizeDarks = params.optimizeDarks !== false; // enabled by default
       IC.darkOptimizationWindow = params.darkOptimizationWindow || 1024;
       IC.darkOptimizationLow = 3.0;
       IC.darkOptimizationThreshold = 0.0;
@@ -724,12 +725,8 @@ handlers.integrate = function(params) {
 
    var images = [];
    for (var i = 0; i < files.length; i++) {
-      // [enabled, path, drizzlePath, weight]
-      var weight = 1.0;
-      if (params.weights && params.weights[i] !== undefined) {
-         weight = params.weights[i];
-      }
-      images.push([true, files[i], "", weight]);
+      // [enabled, path, drizzlePath, localNormalizationDataPath]
+      images.push([true, String(files[i]), "", ""]);
    }
    II.images = images;
 
@@ -807,7 +804,7 @@ handlers.create_master_calibration = function(params) {
 
    var images = [];
    for (var i = 0; i < files.length; i++) {
-      images.push([true, files[i], "", 1.0]);
+      images.push([true, String(files[i]), "", ""]);
    }
    II.images = images;
 
